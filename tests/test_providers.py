@@ -221,3 +221,37 @@ def test_openai_compatible_string_args_text_fallback_and_tool_choice_retry(tmp_p
     second = asyncio.run(provider.complete(system="S", messages=provider.initial_messages([], "x"), tools=TOOLS, allow_tools=True))
     assert second.tool_calls[0].name == "web_search" and second.tool_calls[0].input == {"query": "q2"}
     assert provider.is_local and first.usage.cost_usd == 0
+
+
+def test_anthropic_older_model_gets_no_adaptive_or_fallback_fields(tmp_path):
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx2.Response(200, content=anthropic_stream([{"type": "text", "text": "ok"}], "end_turn", model="claude-haiku-4-5"),
+                               headers={"content-type": "text/event-stream"})  # fmt: skip
+
+    provider = anthropic_provider(tmp_path, handler, anthropic_model="claude-haiku-4-5")
+    asyncio.run(provider.complete(system="S", messages=provider.initial_messages([], "x"), tools=TOOLS, allow_tools=True))
+    body = captured["body"]
+    assert "thinking" not in body and "output_config" not in body and "fallbacks" not in body
+
+
+def test_anthropic_retries_without_rejected_optional_feature(tmp_path):
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "fallbacks" in body:
+            return httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
+                                                                          "message": "fallbacks: not available for this organization"}})  # fmt: skip
+        return httpx2.Response(200, content=anthropic_stream([{"type": "text", "text": "ok"}], "end_turn"),
+                               headers={"content-type": "text/event-stream"})  # fmt: skip
+
+    provider = anthropic_provider(tmp_path, handler)
+    turn = asyncio.run(provider.complete(system="S", messages=provider.initial_messages([], "x"), tools=TOOLS, allow_tools=True))
+    assert turn.text == "ok" and len(bodies) == 2 and "fallbacks" not in bodies[1]
+    assert bodies[1]["thinking"]["type"] == "adaptive"  # everything else kept
+    asyncio.run(provider.complete(system="S", messages=provider.initial_messages([], "x"), tools=TOOLS, allow_tools=True))
+    assert len(bodies) == 3  # remembered: no second failing attempt

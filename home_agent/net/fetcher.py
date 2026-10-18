@@ -86,7 +86,8 @@ class WebFetcher:
                         redirects.append(current)
                         continue
                     body, truncated = await self._read_limited(response)
-                    return self._build(url, str(response.url), response, body, truncated, redirects)
+                    # parsing large HTML/PDF is CPU work; keep the event loop responsive
+                    return await asyncio.to_thread(self._build, url, str(response.url), response, body, truncated, redirects)
             except httpx2.TimeoutException:
                 return FetchResult(url=url, final_url=current, ok=False, error="Timed out while fetching the page",
                                    redirects=redirects)  # fmt: skip

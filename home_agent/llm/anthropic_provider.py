@@ -14,6 +14,11 @@ log = logging.getLogger(__name__)
 
 THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Models that accept the server-side `fallbacks: "default"` refusal fallback.
+FALLBACK_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5")
+# Models with adaptive thinking and the effort control (older models take neither).
+ADAPTIVE_MODELS = ("claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+                   "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5")  # fmt: skip
 NO_KEY_MESSAGE = (
     "ANTHROPIC_API_KEY is not set. Create an API key at https://console.anthropic.com (API usage is billed "
     "separately; a Claude.ai or Claude Code subscription does not include API access), put it in .env, and "
@@ -30,7 +35,9 @@ class AnthropicProvider(ModelProvider):
         self.model = settings.anthropic_model
         self.effort = settings.anthropic_effort
         self.max_tokens = settings.anthropic_max_tokens
-        self.fallback = settings.anthropic_refusal_fallback
+        self.fallback = settings.anthropic_refusal_fallback and self.model.startswith(FALLBACK_MODELS)
+        self.adaptive = self.model.startswith(ADAPTIVE_MODELS)
+        self.binding = self.adaptive
         self.price_override = override_price(settings.model_input_price, settings.model_output_price)
         if client is not None:
             self.client = client
@@ -64,7 +71,28 @@ class AnthropicProvider(ModelProvider):
 
     # -- calls ----------------------------------------------------------------------
     async def complete(self, *, system: str, messages: list[dict], tools: list[ToolSpec], allow_tools: bool) -> ModelTurn:
-        betas = [THINKING_BINDING_BETA]
+        try:
+            message = await self._stream(system, messages, tools, allow_tools)
+        except anthropic.BadRequestError as exc:
+            # An account or model that does not accept an optional beta field should not
+            # break every task: drop the optional extras once and retry.
+            text = _short(exc).lower()
+            optional = ("fallback" in text and self.fallback) or ("block_binding" in text and self.binding)
+            if not optional:
+                raise self._translate(exc) from None
+            self.fallback = self.fallback and "fallback" not in text
+            self.binding = self.binding and "block_binding" not in text
+            log.warning("Anthropic rejected an optional feature; retrying without it: %s", _short(exc))
+            try:
+                message = await self._stream(system, messages, tools, allow_tools)
+            except anthropic.APIError as retry_exc:
+                raise self._translate(retry_exc) from None
+        except anthropic.APIError as exc:
+            raise self._translate(exc) from None
+        return self._to_turn(message)
+
+    async def _stream(self, system: str, messages: list[dict], tools: list[ToolSpec], allow_tools: bool):
+        betas = []
         params: dict = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -72,50 +100,59 @@ class AnthropicProvider(ModelProvider):
             "messages": messages,
             "tools": [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools],
             "tool_choice": {"type": "auto" if allow_tools else "none"},
-            "output_config": {"effort": self.effort},
-            # Thinking is always on for current models; its text is never shown to the user.
-            # drop_block degrades gracefully instead of failing if history ever stops matching.
-            "thinking": {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
             "cache_control": {"type": "ephemeral"},
         }
+        if self.adaptive:
+            # Thinking is always on for current models; its text is never shown to the user.
+            params["output_config"] = {"effort": self.effort}
+            params["thinking"] = {"type": "adaptive"}
+            if self.binding:
+                # drop_block degrades gracefully instead of failing if history ever stops matching
+                params["thinking"]["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
+                betas.append(THINKING_BINDING_BETA)
         if self.fallback:
             params["fallbacks"] = "default"
             betas.append(FALLBACK_BETA)
-        params["betas"] = betas
+        if betas:
+            params["betas"] = betas
+        async with self.client.beta.messages.stream(**params) as stream:
+            return await stream.get_final_message()
+
+    def _translate(self, exc: Exception) -> ModelError:
         try:
-            async with self.client.beta.messages.stream(**params) as stream:
-                message = await stream.get_final_message()
+            raise exc
         except anthropic.AuthenticationError:
-            raise ModelConfigError(
+            return ModelConfigError(
                 "Anthropic rejected the API key (401). Check ANTHROPIC_API_KEY in .env. A Claude.ai or Claude Code "
                 "subscription does not include API access."
-            ) from None
+            )
         except anthropic.PermissionDeniedError as exc:
-            raise ModelConfigError(
+            return ModelConfigError(
                 f"Anthropic refused the request (403): {_short(exc)}. The API may not be available in your region, "
                 "or the key lacks access to this model."
-            ) from None
+            )
         except anthropic.NotFoundError:
-            raise ModelConfigError(f"Model '{self.model}' was not found (404). Check ANTHROPIC_MODEL.") from None
+            return ModelConfigError(f"Model '{self.model}' was not found (404). Check ANTHROPIC_MODEL.")
         except anthropic.RateLimitError:
-            raise ModelError("Anthropic rate limit reached (429).", retryable=True) from None
+            return ModelError("Anthropic rate limit reached (429).", retryable=True)
         except anthropic.BadRequestError as exc:
             text = _short(exc)
             if "credit balance" in text.lower():
-                raise ModelConfigError("Your Anthropic account has no remaining credit. Add credit in the Console.") from None
-            raise ModelError(f"Anthropic rejected the request (400): {text}") from None
+                return ModelConfigError("Your Anthropic account has no remaining credit. Add credit in the Console.")
+            return ModelError(f"Anthropic rejected the request (400): {text}")
         except anthropic.APITimeoutError:
-            raise ModelError("The Anthropic API timed out.", retryable=True) from None
+            return ModelError("The Anthropic API timed out.", retryable=True)
         except anthropic.APIConnectionError:
-            raise ModelError(
+            return ModelError(
                 "Could not reach the Anthropic API (network error). If api.anthropic.com is blocked on your network, "
                 "set OUTBOUND_PROXY in .env.",
                 retryable=True,
-            ) from None
+            )
         except anthropic.APIStatusError as exc:
-            raise ModelError(f"Anthropic API error ({exc.status_code}): {_short(exc)}",
-                             retryable=exc.status_code >= 500 or exc.status_code == 529) from None  # fmt: skip
-        return self._to_turn(message)
+            return ModelError(f"Anthropic API error ({exc.status_code}): {_short(exc)}",
+                              retryable=exc.status_code >= 500 or exc.status_code == 529)  # fmt: skip
+        except Exception as exc:  # pragma: no cover - defensive
+            return ModelError(f"Anthropic request failed: {type(exc).__name__}")
 
     def _to_turn(self, message) -> ModelTurn:
         blocks = [_clean_block(b.to_dict()) for b in message.content]
@@ -193,8 +230,8 @@ class AnthropicProvider(ModelProvider):
         return f"Connected; model {getattr(info, 'display_name', None) or self.model} is available"
 
     def describe(self) -> dict:
-        return {"provider": self.name, "model": self.model, "local": False, "effort": self.effort,
-                "refusal_fallback": self.fallback}  # fmt: skip
+        return {"provider": self.name, "model": self.model, "local": False,
+                "effort": self.effort if self.adaptive else None, "refusal_fallback": self.fallback}  # fmt: skip
 
     async def aclose(self) -> None:
         await self.client.close()

@@ -10,6 +10,7 @@ runs shell commands, or reads settings or credentials.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -245,7 +246,7 @@ async def _render(ctx: ToolContext, url: str, previous: FetchResult | None) -> t
     if final_blocked:
         return FetchResult(url=url, final_url=rendered.final_url, ok=False,
                            error="Blocked: the page redirected to a private or local address"), None  # fmt: skip
-    extracted = html_to_text(rendered.html, rendered.final_url)
+    extracted = await asyncio.to_thread(html_to_text, rendered.html, rendered.final_url)
     result = FetchResult(url=url, final_url=rendered.final_url, ok=True, status_code=rendered.status_code,
                          content_type="text/html", title=rendered.title or extracted.title, text=extracted.text,
                          links=extracted.links, via="browser")  # fmt: skip

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -561,8 +562,11 @@ def run_schedule_now(schedule_id: int, request: Request):
     if svc.db.one("SELECT id FROM tasks WHERE schedule_id = ? AND status IN ('queued', 'running')", (schedule_id,)):
         raise HTTPException(409, "A run of this schedule is already in progress")
     provider = _check_provider(svc)
-    task_id = create_task(svc.db, kind="scheduled", title=schedule["name"], prompt=schedule_service.scheduled_prompt(schedule),
-                          schedule_id=schedule_id, scheduled_for=f"manual-{now_iso()}")  # fmt: skip
+    try:
+        task_id = create_task(svc.db, kind="scheduled", title=schedule["name"], prompt=schedule_service.scheduled_prompt(schedule),
+                              schedule_id=schedule_id, scheduled_for=f"manual-{now_iso()}")  # fmt: skip
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "A run of this schedule was just started") from None
     svc.db.execute("UPDATE tasks SET provider = ? WHERE id = ?", (provider, task_id))
     if svc.worker:
         svc.worker.wake()

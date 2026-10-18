@@ -68,8 +68,8 @@ Anthropic offers its API only in [supported countries](https://www.anthropic.com
 check that your use complies. Alternatives are a local model, or an OpenAI-compatible provider that serves
 your region (set `MODEL_PROVIDER=openai_compatible` with its URL, key, model, and prices). If you use a VPN
 client with a local HTTP proxy, set `OUTBOUND_PROXY=http://127.0.0.1:7890`. If the client uses fake-IP DNS
-(for example Clash), also set `FETCH_ALLOWED_EXTRA_CIDRS=198.18.0.0/15`. A PyPI mirror (`UV_INDEX_URL`) and a
-Playwright download mirror (`PLAYWRIGHT_DOWNLOAD_HOST`) can speed up installation.
+(for example Clash), also set `FETCH_ALLOWED_EXTRA_CIDRS=198.18.0.0/15`. Mirrors can speed up installation: `UV_INDEX_URL` for PyPI, `UV_PYTHON_INSTALL_MIRROR` for the Python
+download, and `PLAYWRIGHT_DOWNLOAD_HOST` for Chromium.
 
 ## Everyday commands
 
@@ -256,6 +256,6 @@ The live tests read real pages, render with Chromium, and check redirect blockin
   the request, not at connect time.
 - Search APIs and Google may be unreachable from some networks without a VPN.
 - One user per installation. Gmail is the only email integration. Sending is off by default.
-- The launchd, Tailscale and pmset parts were written for macOS and checked with shellcheck and
-  `plutil`-compatible XML. They could not be executed on a Mac from this build environment. The systemd
-  unit is provided for Linux hosts.
+- The launchd, Tailscale and pmset parts were written for macOS and checked with shellcheck, and the
+  generated launchd plists parse as valid property lists. They could not be executed on a Mac from the
+  build environment. The systemd unit is provided for Linux hosts.

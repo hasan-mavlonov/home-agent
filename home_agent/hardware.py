@@ -112,16 +112,19 @@ def report() -> str:
         lines.append("This is not an Apple Silicon Mac; local models will be slow.")
     rec = recommend(hw.memory_gb)
     if rec["budget_gb"]:
-        lines.append(f"GPU-usable memory (macOS default limit): about {rec['budget_gb']} GB")
+        label = "GPU-usable memory (macOS default limit)" if hw.apple_silicon else "Memory budget for the model"
+        lines.append(f"{label}: about {rec['budget_gb']} GB")
     if rec["primary"]:
         lines.append(f"\nRecommended: {rec['primary']}  with OLLAMA_NUM_CTX={rec['num_ctx']}")
         lines.append("Other models that fit:")
         for option in rec["options"]:
             lines.append(f"  - {option['model']:<16} ~{option['download_gb']:g} GB  {option['note']}")
         lines.append("\nSet up:")
-        if not hw.ollama_installed:
+        if not hw.ollama_installed and hw.system == "Darwin":
             lines.append("  brew install ollama        # or the Ollama app from https://ollama.com/download")
             lines.append("  brew services start ollama")
+        elif not hw.ollama_installed:
+            lines.append("  # install Ollama: https://ollama.com/download")
         lines.append(f"  ollama pull {rec['primary']}")
         lines.append(f"  # in .env: MODEL_PROVIDER=ollama  OLLAMA_MODEL={rec['primary']}  OLLAMA_NUM_CTX={rec['num_ctx']}")
     else:

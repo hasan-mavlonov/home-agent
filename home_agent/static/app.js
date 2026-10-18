@@ -160,7 +160,7 @@ async function startApp() {
   document.getElementById("app").hidden = false;
   await loadSettings();
   refreshOverview();
-  setInterval(refreshOverview, 15000);
+  if (!state.overviewTimer) state.overviewTimer = setInterval(refreshOverview, 15000);
   route();
 }
 
@@ -520,7 +520,7 @@ function formatText(o) {
 }
 
 const OPP_COLUMNS = [
-  ["name", "Name"], ["relevance_score", "Fit"], ["eligibility_status", "Eligibility"],
+  ["name", "Name"], ["category", "Category"], ["relevance_score", "Relevance"], ["eligibility_status", "Eligibility"],
   ["deadline_date", "Deadline"], ["location", "Location / format"], ["cost", "Cost"], ["prize", "Prize / funding"],
   ["application_url", "Apply"], ["sources", "Sources"], ["verification_status", "Verification"], ["actions", ""],
 ];
@@ -590,7 +590,8 @@ async function renderOpportunities() {
       onclick: key === "actions" ? null : () => { prefs.asc = prefs.sort === key ? !prefs.asc : true; prefs.sort = key; savePrefs(); draw(); },
     }, label)));
     const rows = list.map((o) => h("tr", { class: (o.is_new ? "is-new " : "") + (o.expired ? "is-expired" : "") },
-      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, [o.category, o.organizer].filter(Boolean).join(" · ")), h("div", { class: "row" }, badges(o)), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null),
+      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, o.organizer || ""), h("div", { class: "row" }, badges(o)), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null),
+      h("td", {}, o.category),
       h("td", { title: o.relevance_reason || "" }, h("strong", {}, o.relevance_score ?? "-"), h("div", { class: "small muted" }, truncate(o.relevance_reason, 70))),
       h("td", {}, statusChip(o.eligibility_status || "unclear"), " ", factMark(o, "eligibility"), h("div", { class: "small" }, (o.eligibility || "").slice(0, 160))),
       h("td", {}, factMark(o, "deadline"), " ", deadlineText(o), o.expired ? h("div", { class: "small check-bad" }, "Closed") : null),

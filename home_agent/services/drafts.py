@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import mimetypes
 import uuid
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses
@@ -50,12 +51,15 @@ def parse_addresses(values) -> list[str]:
 
 
 def _attachment_meta(workspace: Workspace, attachments: list[dict]) -> list[dict]:
+    """Read each attachment once; the same bytes are hashed for approval and put in the email."""
     meta = []
     for item in attachments:
         try:
-            meta.append(workspace.file_meta(item["path"]))
+            data = workspace.read_bytes(item["path"])
         except (WorkspaceError, KeyError) as exc:
             raise DraftError(f"Attachment problem: {exc}") from None
+        meta.append({"path": item["path"], "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                     "mime": mimetypes.guess_type(item["path"])[0] or "application/octet-stream", "data": data})  # fmt: skip
     return meta
 
 
@@ -215,7 +219,7 @@ def revoke_approval(db: Database, draft_id: int) -> dict:
     return draft
 
 
-def build_mime(draft: dict, workspace: Workspace, message_id: str) -> str:
+def build_mime(draft: dict, workspace: Workspace, message_id: str, attachments: list[dict] | None = None) -> str:
     message = EmailMessage()
     message["To"] = ", ".join(loads(draft["to_addrs"], []))
     cc = loads(draft["cc_addrs"], [])
@@ -228,12 +232,12 @@ def build_mime(draft: dict, workspace: Workspace, message_id: str) -> str:
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = message_id
     message.set_content(draft["body"])
-    for item in loads(draft["attachments"], []):
-        meta = workspace.file_meta(item["path"])
+    if attachments is None:
+        attachments = _attachment_meta(workspace, loads(draft["attachments"], []))
+    for meta in attachments:
         maintype, _, subtype = meta["mime"].partition("/")
         message.add_attachment(
-            workspace.read_bytes(item["path"]), maintype=maintype, subtype=subtype or "octet-stream",
-            filename=item["path"].rsplit("/", 1)[-1],
+            meta["data"], maintype=maintype, subtype=subtype or "octet-stream", filename=meta["path"].rsplit("/", 1)[-1],
         )  # fmt: skip
     return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
 
@@ -281,7 +285,8 @@ async def send(db: Database, workspace: Workspace, gmail: GmailService, draft_id
             raise DraftError("Draft not found", 404)
         if draft["status"] != "approved":
             raise DraftError(f"Only an approved draft can be sent (this one is {draft['status'].replace('_', ' ')})", 409)
-        current = content_hash(draft, _attachment_meta(workspace, loads(draft["attachments"], [])))
+        attachments = _attachment_meta(workspace, loads(draft["attachments"], []))
+        current = content_hash(draft, attachments)
         if draft["approved_hash"] != current or reviewed_hash != current:
             raise DraftError("The draft differs from what was approved. Review and approve it again.", 409)
         expires = parse_iso(draft["approval_expires_at"])
@@ -296,7 +301,7 @@ async def send(db: Database, workspace: Workspace, gmail: GmailService, draft_id
             raise DraftError("This draft is already being sent", 409)
         db.audit("user", "draft.send_started", {"draft_id": draft_id, "attempt": attempt, "hash": current})
 
-    raw = build_mime(draft, workspace, f"<{attempt}@home-agent.local>")
+    raw = build_mime(draft, workspace, f"<{attempt}@home-agent.local>", attachments)
     gmail_id = draft["gmail_draft_id"]
     try:
         if gmail_id:

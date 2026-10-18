@@ -271,3 +271,30 @@ def test_pending_tool_call_with_completed_ledger_is_not_rerun(harness_factory):
 
 def test_password_constant_is_used():
     assert len(PASSWORD) >= 10
+
+
+def test_everything_persists_across_restarts(tmp_path):
+    first = Harness(tmp_path, provider=ScriptedProvider([lambda m: ("text", "Answer one")]))
+    with first:
+        first.login()
+        conv_id, task_id = start_chat(first, "Remember this chat")
+        finished(first, task_id)
+        first.post("/api/drafts", json={"to": ["x@example.org"], "subject": "Kept", "body": "Body"})
+        first.post("/api/memories", json={"content": "I prefer online events"})
+        first.post("/api/schedules", json={"name": "Weekly", "prompt": "Find grants", "recurrence": {"freq": "weekly", "weekday": 1, "time": "08:00"}})
+        first.put("/api/profile", json={"name": "Hasan", "projects": [{"name": "MindForm", "description": "AI app"}]})
+        from home_agent.services import opportunities as opp
+
+        opp.save_opportunity(first.db, None, {"name": "Kept Hackathon 2026", "category": "hackathon", "summary": "s",
+                                              "relevance_score": 50, "relevance_reason": "r", "eligibility_status": "unclear",
+                                              "facts": [], "source_urls": ["https://kept.example.org/x"]}, None, "Asia/Shanghai")  # fmt: skip
+    second = Harness(tmp_path)
+    with second:
+        second.login()  # the password persisted too
+        assert second.get(f"/api/conversations/{conv_id}").json()["messages"][-1]["content"] == "Answer one"
+        assert second.get(f"/api/tasks/{task_id}").json()["status"] == "succeeded"
+        assert second.get("/api/drafts").json()["items"][0]["subject"] == "Kept"
+        assert second.get("/api/memories").json()["items"][0]["content"] == "I prefer online events"
+        assert second.get("/api/schedules").json()["items"][0]["name"] == "Weekly"
+        assert second.get("/api/profile").json()["projects"] == [{"name": "MindForm", "description": "AI app"}]
+        assert second.get("/api/opportunities").json()["items"][0]["name"] == "Kept Hackathon 2026"

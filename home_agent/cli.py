@@ -198,7 +198,25 @@ def cmd_doctor(args) -> int:
         browsers = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", Path.home() / ("Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright")))
         has_browser = settings.browser_executable_path or settings.browser_channel or any(browsers.glob("chromium*"))
         _check(bool(has_browser) or None, "Browser for JavaScript pages",
-               "ready" if has_browser else "not installed - run: uv run playwright install chromium")  # fmt: skip
+               ("installed" + ("" if args.live else " (--live test-launches it)")) if has_browser
+               else "not installed - run: uv run playwright install chromium")  # fmt: skip
+        if args.live and has_browser:
+            from .net.browser import BrowserRenderer
+            from .net.guard import NetGuard
+
+            async def render():
+                renderer = BrowserRenderer(NetGuard(settings.extra_allowed_networks), upstream_proxy=settings.outbound_proxy,
+                                           executable_path=settings.browser_executable_path, channel=settings.browser_channel)  # fmt: skip
+                try:
+                    return await renderer.render("https://example.com/")
+                finally:
+                    await renderer.aclose()
+
+            try:
+                result = asyncio.run(render())
+                _check(True, "Browser launch", f"rendered example.com ({result.title})")
+            except Exception as exc:
+                _check(False, "Browser launch", str(exc).splitlines()[0][:200])
     else:
         _check(None, "Browser for JavaScript pages", "disabled")
     if settings.gmail_client_id:
