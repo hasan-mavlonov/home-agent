@@ -6,6 +6,7 @@ cookies/CSRF, the JavaScript UI, the worker. Skipped when Chromium is not instal
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import threading
@@ -63,7 +64,9 @@ def live_server(tmp_path):
 
 
 @pytest.mark.skipif(CHROMIUM is None and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), reason="Chromium not installed")
-def test_ui_end_to_end(live_server):
+def test_ui_end_to_end(live_server, tmp_path):
+    import sqlite3
+
     from playwright.sync_api import sync_playwright
 
     errors: list[str] = []
@@ -90,10 +93,22 @@ def test_ui_end_to_end(live_server):
         if SHOTS:
             page.screenshot(path=str(SHOTS / "chat-desktop.png"), full_page=True)
 
+        # a notice from the save check, as written for a page that looks like a past edition
+        notice = "https://hackathon.example.org/2026 may describe a past edition (the title says \"Recap\")."
+        with sqlite3.connect(make_settings(tmp_path).db_path) as conn:
+            conn.execute("UPDATE opportunities SET warnings = ?",
+                         (json.dumps([{"kind": "past_edition", "url": OFFICIAL, "reasons": [], "message": notice}]),))
         page.goto(live_server + "/#/opportunities")
         page.wait_for_selector("table.data td.name")
         assert "Shanghai AI" in page.inner_text("table.data")
         assert page.locator("tr.is-new").count() == 1
+        assert page.inner_text("table.data td.name .opp-warn summary") == "⚠ May be a past edition"
+        page.click("table.data td.name .opp-warn summary")
+        assert notice in page.inner_text("table.data td.name .opp-warn")
+        # the fabricated cost quote: the mark says why the fact is not confirmed
+        cost_mark = page.locator("table.data tbody tr td:nth-child(7) .fact-mark")
+        assert cost_mark.inner_text() == "!"
+        assert cost_mark.get_attribute("title") == "Claimed but not confirmed on a fetched page (quote not found on the fetched page)"
         if SHOTS:
             page.screenshot(path=str(SHOTS / "opportunities-desktop.png"), full_page=True)
         page.click("button:has-text('☆')")
@@ -115,6 +130,7 @@ def test_ui_end_to_end(live_server):
                 page.screenshot(path=str(SHOTS / f"{route}-desktop.png"), full_page=True)
         page.goto(live_server + "/#/tasks/1")
         page.wait_for_selector("text=Sources consulted")
+        assert "cost could not be confirmed on the cited pages" in page.inner_text("main")
         if SHOTS:
             page.screenshot(path=str(SHOTS / "task-desktop.png"), full_page=True)
 
@@ -126,6 +142,8 @@ def test_ui_end_to_end(live_server):
         mobile.wait_for_selector(".bottomnav")
         mobile.goto(live_server + "/#/opportunities")
         mobile.wait_for_selector(".opp-card h3")
+        assert mobile.inner_text(".opp-card .opp-warn") == "⚠ " + notice
+        assert mobile.evaluate("document.documentElement.scrollWidth <= window.innerWidth")  # the long URL wraps
         if SHOTS:
             mobile.screenshot(path=str(SHOTS / "opportunities-mobile.png"), full_page=True)
             mobile.goto(live_server + "/#/chat/1")

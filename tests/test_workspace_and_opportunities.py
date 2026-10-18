@@ -116,3 +116,167 @@ def test_source_must_have_been_consulted(tmp_path):
     assert status == {"deadline": "verified", "eligibility": "verified", "prize": "unverified", "application_url": "unverified"}
     assert row["verification_status"] == "partially_verified"
     assert any("application URL" in w for w in result["warnings"])
+
+
+def test_quote_with_ellipsis_needs_every_piece_in_order_and_close():
+    import time
+
+    from home_agent.util import quote_in_text
+
+    page = ("Prizes: $10,000 for first place, $5,000 for second place and $2,500 for third place. "
+            + "Filler text about the venue and the schedule. " * 40
+            + "Judging criteria: impact and originality.")  # fmt: skip
+    assert quote_in_text("Prizes: $10,000 ... $2,500 for third place", page)
+    assert quote_in_text("Prizes: $10,000 … $2,500 for third place", page)  # one-character ellipsis
+    assert quote_in_text("prizes: $10,000 [...] third place.", page)
+    assert not quote_in_text("Prizes: $10,000 ... $50,000 grand prize", page)  # a piece that is not on the page
+    assert not quote_in_text("$2,500 for third place ... Prizes: $10,000", page)  # wrong order
+    assert not quote_in_text("Prizes: $10,000 ... Judging criteria: impact", page)  # pieces ~1,900 characters apart
+    assert quote_in_text("Prizes: $10,000 for first place", page)  # plain quotes behave as before
+    assert not quote_in_text("... ...", page)
+    # the first "second round" is too far from the final piece; the later one is close enough
+    pages = "Round one opens. Second round. " + "x " * 150 + "Second round. " + "y " * 150 + "Final round closes."
+    assert quote_in_text("Round one opens ... Second round ... Final round closes", pages)
+    assert not quote_in_text("Round one opens ... Final round closes", pages)
+    started = time.monotonic()
+    assert not quote_in_text("aaaa ... aaaa ... aaaa ... aaaa ... aaab", "a" * 100_000 + "b")  # every piece is present
+    assert not quote_in_text("ab ab ... ab ab ... zz", "ab " * 9_000 + "c" * 600 + "zz")  # under the hit cap, too far
+    assert quote_in_text("ab ab ... ab ab ... zz", "ab " * 9_000 + "zz")
+    assert time.monotonic() - started < 2  # repetitive pages cannot make the check explode
+
+
+def _task_with_pages(db, pages: dict[str, tuple[str, str]]):
+    from home_agent.services.sources import record_fetch
+
+    task_id = db.insert("tasks", {"kind": "chat", "title": "t", "prompt": "p", "status": "running", "created_at": now_iso(), "updated_at": now_iso()})
+    for url, (title, text) in pages.items():
+        record_fetch(db, task_id, url=url, final_url=url, ok=True, title=title, text=text, links=[], status_code=200,
+                     content_type="text/html", error=None, kind="fetched")  # fmt: skip
+    return task_id
+
+
+def test_facts_without_a_source_are_checked_against_the_opportunity_pages_only(tmp_path):
+    from home_agent.services.sources import TaskSources
+
+    db = _db(tmp_path)
+    official, rules, unrelated = "https://grants.example.org/ai-2026", "https://grants.example.org/ai-2026/rules", "https://news.example.org/x"
+    apply = "https://grants.example.org/ai-2026/apply"
+    task_id = _task_with_pages(db, {
+        official: ("AI Grant 2026", "Submissions close on 30 November 2026 (AoE)."),
+        rules: ("Rules", "Applicants must be enrolled at a university in any country."),
+        unrelated: ("Other news", "Prize pool: $1,000,000 for the winning team."),
+        apply: ("Apply", "Applying is free of charge. Start your application."),
+    })  # fmt: skip
+    facts = [
+        # no source_url: found on the official page, which is attached to the fact
+        {"field": "deadline", "value": "2026-11-30", "status": "verified", "quote": "Submissions close on 30 November 2026"},
+        # names the official page, but the quote is on the cited rules page: verified there, source corrected
+        {"field": "eligibility", "value": "students", "status": "verified", "source_url": official,
+         "quote": "must be enrolled at a university"},
+        # only on a page the task read but this opportunity does not cite: not accepted
+        {"field": "prize", "value": "$1M", "status": "verified", "quote": "Prize pool: $1,000,000"},
+        # a deadline-style claim that appears nowhere
+        {"field": "event_dates", "value": "2026-12-12", "status": "verified", "quote": "Final event on 12 December 2026"},
+        # on the application page, which is cited only as application_url
+        {"field": "cost", "value": "free", "status": "verified", "quote": "Applying is free of charge"},
+    ]  # fmt: skip
+    data = base(facts=facts, source_urls=[official, rules], application_url=apply)
+    result = opp.save_opportunity(db, task_id, data, TaskSources(db, task_id), "Asia/Shanghai")
+    row = opp.get_opportunity(db, result["id"], "Asia/Shanghai")
+    by_field = {f["field"]: f for f in row["facts"]}
+    assert by_field["deadline"]["status"] == "verified" and by_field["deadline"]["source_url"] == official
+    assert by_field["eligibility"]["status"] == "verified" and by_field["eligibility"]["source_url"] == rules
+    assert any("source corrected" in w for w in result["warnings"])
+    assert by_field["prize"]["status"] == "unverified"
+    assert by_field["prize"]["check"] == "quote not found on the pages cited for this opportunity"
+    assert by_field["event_dates"]["status"] == "unverified"
+    assert result["unconfirmed"] == ["event_dates", "prize"]
+    assert row["field_checks"]["prize"] == "quote not found on the pages cited for this opportunity"
+    assert row["warnings"] == []  # nothing suggests a past edition
+    assert by_field["cost"]["status"] == "verified" and by_field["cost"]["source_url"] == apply
+    assert {s["url"] for s in row["sources"]} == {official, rules, apply}  # the page the cost quote is on is listed
+
+    # a fact naming a page that was never fetched, with no cited page fetched either
+    other = _task_with_pages(db, {})
+    db.insert("sources", {"task_id": other, "url": official, "final_url": official, "title": "x", "kind": "search_result",
+                          "ok": 1, "accessed_at": now_iso()})  # fmt: skip
+    lone = [{"field": "deadline", "value": "2026-11-30", "status": "verified", "source_url": official, "quote": "Submissions close"}]
+    result = opp.save_opportunity(db, other, base(name="Other Grant", official_url=official + "/b", facts=lone, source_urls=[official]),
+                                  TaskSources(db, other), "Asia/Shanghai")  # fmt: skip
+    fact = opp.get_opportunity(db, result["id"], "Asia/Shanghai")["facts"][0]
+    assert fact["status"] == "unverified" and fact["check"] == "source page was not fetched in this task"
+
+
+def test_past_edition_pages_are_flagged_and_the_notice_is_kept_on_the_record(tmp_path):
+    from datetime import datetime
+
+    from home_agent.services.sources import TaskSources
+
+    db = _db(tmp_path)
+    year = datetime.now().year
+    recap = "https://events.example.org/ai-hackathon-act-iii"
+    task_id = _task_with_pages(db, {recap: ("[Recap] Example AI Hackathon: Act III",
+                                            "Thank you for participating! 120 teams built agents over three days.")})  # fmt: skip
+    facts = [{"field": "deadline", "value": f"{year}-12-01", "status": "verified", "source_url": recap,
+              "quote": f"Registration closes 1 December {year}"}]  # not on the page
+    data = base(name="Example AI Hackathon: Act III", official_url=recap, source_urls=[recap], facts=facts,
+                deadline={"date": f"{year}-12-01"})  # fmt: skip
+    result = opp.save_opportunity(db, task_id, data, TaskSources(db, task_id), "Asia/Shanghai")
+    assert result["unconfirmed"] == ["deadline"]
+    assert len(result["past_editions"]) == 1
+    reasons = result["past_editions"][0]["reasons"]
+    assert reasons == ['the title says "Recap"', 'the page says "thank you for participating"']
+    assert any("may describe a past edition" in w and "say so in your answer" in w for w in result["warnings"])
+    row = opp.get_opportunity(db, result["id"], "Asia/Shanghai")
+    assert [(n["kind"], n["url"]) for n in row["warnings"]] == [("past_edition", recap)]
+    assert row["field_status"]["deadline"] == "unverified"
+    assert opp.compact_list(db, "Asia/Shanghai", None, False, 10)[0]["warnings"] == [row["warnings"][0]["message"]]
+    assert "may describe a past edition" in opp.export_csv(db, "Asia/Shanghai")
+
+    # a manual edit (no task sources) keeps the notice; a later clean check replaces it
+    opp.save_opportunity(db, None, data | {"facts": []}, None, "Asia/Shanghai")
+    assert opp.get_opportunity(db, result["id"], "Asia/Shanghai")["warnings"] == row["warnings"]
+    current = "https://events.example.org/ai-hackathon-act-iv"
+    later = _task_with_pages(db, {current: (f"Example AI Hackathon {year}", f"Registration closes on 1 December {year}.")})
+    opp.save_opportunity(db, later, data | {"official_url": current, "source_urls": [current], "facts": []},
+                         TaskSources(db, later), "Asia/Shanghai")  # fmt: skip
+    assert opp.get_opportunity(db, result["id"], "Asia/Shanghai")["warnings"] == []
+
+
+def test_past_edition_signals():
+    y = 2026
+    reasons = opp.past_edition_reasons
+    assert reasons({"title": "Example Hackathon 2024", "text": ""}, y) == ["the title only mentions 2024"]
+    assert reasons({"title": "Example Fellowship 2025-26", "text": ""}, y) == []  # spans the current year
+    assert reasons({"title": "Example Fellowship 2025/2026", "text": ""}, y) == []
+    assert reasons({"title": "Results published 2025-12-01", "text": ""}, y) == ["the title only mentions 2025"]
+    assert reasons({"title": "Demo day 2026-03-01", "text": ""}, y) == []
+    assert reasons({"title": "Example Hackathon 2026", "text": "Registration closes on 1 December."}, y) == []
+    assert reasons({"title": "Challenge", "text": "Submissions are now closed. Winners will be announced soon."}, y) == [
+        'the page says "submissions are now closed"']
+    assert reasons({"title": "Challenge", "text": "The hackathon has ended."}, y) == ['the page says "the hackathon has ended"']
+    # an aggregator listing other, closed events further down is not flagged
+    listing = "Upcoming hackathons this month. " + "Details about another event. " * 120 + "Registration closed"
+    assert reasons({"title": "All hackathons", "text": listing}, y) == []
+
+
+def test_upgrade_from_first_schema_adds_opportunity_warnings(tmp_path):
+    import sqlite3
+
+    from home_agent.db import MIGRATIONS, _split_sql
+
+    path = make_settings(tmp_path).db_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    for statement in _split_sql(MIGRATIONS[0]):
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 1")
+    conn.execute("INSERT INTO opportunities (dedupe_key, name, category, verification_status, first_seen_at, last_checked_at) "
+                 "VALUES ('name:old|2026', 'Old record', 'grant', 'unverified', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")  # fmt: skip
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    db.migrate()
+    assert db.scalar("PRAGMA user_version") == len(MIGRATIONS)
+    row = opp.list_opportunities(db, "Asia/Shanghai")[0]
+    assert row["name"] == "Old record" and row["warnings"] == []

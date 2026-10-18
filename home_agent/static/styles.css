@@ -284,3 +284,5 @@ table.data td .facts { font-size: 0.78rem; }
 details summary { cursor: pointer; }
 .chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .chip { background: var(--surface-2); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.8rem; }
+.opp-warn { overflow-wrap: anywhere; }
+details.opp-warn summary { cursor: pointer; }
