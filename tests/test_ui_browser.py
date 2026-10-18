@@ -130,3 +130,64 @@ def test_ui_end_to_end(live_server):
             mobile.screenshot(path=str(SHOTS / "chat-mobile.png"), full_page=True)
         browser.close()
     assert not [e for e in errors if "favicon" not in e], errors
+
+
+@pytest.mark.skipif(CHROMIUM is None and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), reason="Chromium not installed")
+def test_ui_draft_review_approve_send(tmp_path):
+    """MOCKED Gmail. The UI flow: write draft -> review exact content -> approve -> edit cancels -> re-approve -> send."""
+    from playwright.sync_api import sync_playwright
+    from test_drafts import FakeGmail, make_gmail
+
+    settings = make_settings(tmp_path, port=_free_port(), gmail_client_id="id", gmail_client_secret="secret", gmail_allow_send=True)
+    db = Database(settings.db_path)
+    db.migrate()
+    fake = FakeGmail()
+    services = Services(settings, db, provider_factory=lambda name: script(), gmail=make_gmail(settings, db, fake))
+    AuthService(db).set_password(PASSWORD)
+    app = create_app(settings, services=services, use_lock=False)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=settings.port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.05)
+    base = f"http://127.0.0.1:{settings.port}"
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=CHROMIUM) if CHROMIUM else p.chromium.launch()
+            page = browser.new_page()
+            page.on("dialog", lambda d: d.accept())
+            page.goto(base + "/")
+            page.fill("#password", PASSWORD)
+            page.click("#login-form button")
+            page.wait_for_selector(".sidenav")
+            page.goto(base + "/#/drafts")
+            page.click("button:has-text('New draft')")
+            page.wait_for_selector("text=Review & approve for sending")
+            inputs = page.locator(".card.stack input:not([type=checkbox])")
+            inputs.nth(0).fill("organizer@example.org")
+            inputs.nth(3).fill("Can international students join?")
+            page.fill(".card.stack textarea", "Hello, is the hackathon open to international students in Shanghai?")
+            page.click("button:has-text('Review & approve for sending')")  # saves first, then shows the exact content
+            page.wait_for_selector(".review")
+            assert "organizer@example.org" in page.inner_text(".review")
+            approve = page.locator("button:has-text('Approve this exact email')")
+            assert approve.is_disabled()
+            page.check("#approve-check")
+            approve.click()
+            page.wait_for_selector("button:has-text('Send now')")
+            # editing after approval cancels it (enforced by the server)
+            page.fill(".card.stack textarea", "Edited text")
+            page.click("button:has-text('Save')")
+            page.wait_for_selector("text=Review & approve for sending")
+            assert page.locator("button:has-text('Send now')").count() == 0
+            page.click("button:has-text('Review & approve for sending')")
+            page.check("#approve-check")
+            page.click("button:has-text('Approve this exact email')")
+            page.click("button:has-text('Send now')")
+            page.wait_for_selector(".status.sent")
+            browser.close()
+        assert fake.send_calls == 1
+        assert "Edited text" in __import__("base64").urlsafe_b64decode(fake.sent[0]["raw"]).decode()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
