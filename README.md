@@ -50,6 +50,26 @@ scripts/service.sh restart
 open http://127.0.0.1:18789
 ```
 
+## Install (Linux, systemd)
+
+```bash
+command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/hasan-mavlonov/home-agent.git ~/home-agent
+cd ~/home-agent
+uv sync --frozen --no-dev
+uv run --no-dev playwright install --with-deps chromium   # optional (JavaScript pages); --with-deps asks for sudo
+uv run --no-dev home-agent init                            # creates .env with a secret key
+uv run --no-dev home-agent set-password
+scripts/service.sh install                                 # systemd user service, starts now
+sudo loginctl enable-linger "$USER"                        # keep it running at boot and after logout
+```
+
+`scripts/service.sh status|restart|logs|stop|uninstall` work the same as on macOS (logs come from
+`journalctl --user`). Home Agent does not keep a Linux machine awake. Nothing runs while it is suspended,
+and schedule times missed during that time become a single catch-up run after it wakes. On an always-on
+host, disable suspend with
+`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`.
+
 ## Credentials and setup you still need
 
 | What | Needed for | Where |
@@ -275,4 +295,5 @@ HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=se
 - One user per installation. Gmail is the only email integration. Sending is off by default.
 - The launchd, Tailscale and pmset parts were written for macOS and checked with shellcheck, and the
   generated launchd plists parse as valid property lists. They could not be executed on a Mac from the
-  build environment. The systemd unit is provided for Linux hosts.
+  build environment. The systemd unit, filled in the way `scripts/service.sh install` fills it, passes
+  `systemd-analyze verify`; it was not started under a running systemd, which the build container lacks.

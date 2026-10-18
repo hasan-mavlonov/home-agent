@@ -21,7 +21,7 @@ for arg in "$@"; do
 done
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "This script is for macOS. On Linux: uv sync --frozen && uv run home-agent init && scripts/service.sh install" >&2
+  echo "This script is for macOS. On Linux, follow 'Install (Linux, systemd)' in README.md." >&2
   exit 1
 fi
 [[ "$(uname -m)" == "arm64" ]] || echo "Note: this is not an Apple Silicon Mac; everything works, local models will be slow."
