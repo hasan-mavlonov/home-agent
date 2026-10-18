@@ -1,0 +1,132 @@
+"""Drives the real web UI in headless Chromium against a live server.
+
+MOCKED: the model (scripted), search results and web pages. Real: HTTP server, auth,
+cookies/CSRF, the JavaScript UI, the worker. Skipped when Chromium is not installed.
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import uvicorn
+from conftest import PASSWORD, make_settings
+from helpers import FakeSearch, pages_transport, make_guard
+from test_workflow import OFFICIAL, PAGE, script
+
+from home_agent.db import Database
+from home_agent.net.fetcher import WebFetcher
+from home_agent.search import SearchResult
+from home_agent.security.auth import AuthService
+from home_agent.services.container import Services
+from home_agent.web.app import create_app
+
+pytestmark = pytest.mark.browser
+CHROMIUM = os.environ.get("BROWSER_EXECUTABLE_PATH") or ("/opt/pw-browsers/chromium" if Path("/opt/pw-browsers/chromium").exists() else None)
+SHOTS = Path(os.environ.get("HOME_AGENT_SCREENSHOTS", "")) if os.environ.get("HOME_AGENT_SCREENSHOTS") else None
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def live_server(tmp_path):
+    settings = make_settings(tmp_path, port=_free_port())
+    db = Database(settings.db_path)
+    db.migrate()
+    guard = make_guard()
+    services = Services(
+        settings, db,
+        search=FakeSearch([SearchResult(title="Shanghai AI & Robotics Hackathon 2026", url=OFFICIAL, snippet="AI hackathon")]),
+        fetcher=WebFetcher(guard, transport=pages_transport({OFFICIAL: (200, "text/html", PAGE)})),
+        guard=guard,
+        provider_factory=lambda name: script(),
+    )  # fmt: skip
+    AuthService(db).set_password(PASSWORD)
+    app = create_app(settings, services=services, use_lock=False)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=settings.port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{settings.port}"
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+@pytest.mark.skipif(CHROMIUM is None and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), reason="Chromium not installed")
+def test_ui_end_to_end(live_server):
+    from playwright.sync_api import sync_playwright
+
+    errors: list[str] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=CHROMIUM) if CHROMIUM else p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 860})
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        page.goto(live_server + "/")
+        page.fill("#password", "wrong password")
+        page.click("#login-form button")
+        page.wait_for_selector("#login-error:has-text('Wrong password')")
+        errors.clear()  # the 401 for the wrong password is expected console noise
+        page.fill("#password", PASSWORD)
+        page.click("#login-form button")
+        page.wait_for_selector("text=What should your agent work on?")
+
+        page.click("text=Find AI and robotics hackathons I can enter in the next three months.")
+        page.wait_for_selector("textarea[aria-label=Message]")
+        page.click("button:has-text('Send')")
+        page.wait_for_selector(".msg.assistant table", timeout=20000)
+        assert "Shanghai AI" in page.inner_text(".msg.assistant")
+        if SHOTS:
+            page.screenshot(path=str(SHOTS / "chat-desktop.png"), full_page=True)
+
+        page.goto(live_server + "/#/opportunities")
+        page.wait_for_selector("table.data td.name")
+        assert "Shanghai AI" in page.inner_text("table.data")
+        assert page.locator("tr.is-new").count() == 1
+        if SHOTS:
+            page.screenshot(path=str(SHOTS / "opportunities-desktop.png"), full_page=True)
+        page.click("button:has-text('☆')")
+        page.wait_for_selector("button:has-text('★')")
+
+        page.goto(live_server + "/#/drafts")
+        page.click(".list a.item")
+        page.wait_for_selector("text=Sending")
+        assert page.input_value("textarea") .startswith("Hello")
+        if SHOTS:
+            page.screenshot(path=str(SHOTS / "draft-desktop.png"), full_page=True)
+
+        for route, marker in [("tasks", "Tasks"), ("schedules", "Schedules"), ("profile", "Profile & memory"),
+                              ("files", "Files"), ("settings", "Settings")]:  # fmt: skip
+            page.goto(f"{live_server}/#/{route}")
+            page.wait_for_selector(f"h2:has-text('{marker}')")
+        page.goto(live_server + "/#/tasks/1")
+        page.wait_for_selector("text=Sources consulted")
+        if SHOTS:
+            page.screenshot(path=str(SHOTS / "task-desktop.png"), full_page=True)
+
+        mobile = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True)
+        mobile.on("pageerror", lambda e: errors.append(str(e)))
+        mobile.goto(live_server + "/")
+        mobile.fill("#password", PASSWORD)
+        mobile.click("#login-form button")
+        mobile.wait_for_selector(".bottomnav")
+        mobile.goto(live_server + "/#/opportunities")
+        mobile.wait_for_selector(".opp-card h3")
+        if SHOTS:
+            mobile.screenshot(path=str(SHOTS / "opportunities-mobile.png"), full_page=True)
+            mobile.goto(live_server + "/#/chat/1")
+            mobile.wait_for_selector(".msg.assistant")
+            mobile.screenshot(path=str(SHOTS / "chat-mobile.png"), full_page=True)
+        browser.close()
+    assert not [e for e in errors if "favicon" not in e], errors

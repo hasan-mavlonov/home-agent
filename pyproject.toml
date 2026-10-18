@@ -1,0 +1,46 @@
+[project]
+name = "home-agent"
+version = "0.1.0"
+description = "Self-hosted personal research agent with a web UI, durable task queue, and opportunity tracking."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic==1.15.0",
+    "beautifulsoup4==4.15.0",
+    "cryptography==50.0.2",
+    "fastapi==0.143.5",
+    "httpx2==2.13.1",
+    "markdown-it-py==4.2.0",
+    "playwright==1.64.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+    "pypdf==6.21.1",
+    "python-multipart==0.0.32",
+    "tzdata==2026.5",
+    "uvicorn==0.54.0",
+]
+
+[project.scripts]
+home-agent = "home_agent.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["home_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: talks to real external services; skipped unless the needed credentials are set",
+    "browser: needs a Playwright Chromium install",
+]
+addopts = "-ra"

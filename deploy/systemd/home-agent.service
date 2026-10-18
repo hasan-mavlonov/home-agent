@@ -1,0 +1,22 @@
+# systemd *user* unit for Linux hosts (the primary target is macOS/launchd).
+# Installed by scripts/service.sh install, which fills in @REPO@ and @ENV_FILE@.
+# Start at boot without logging in: sudo loginctl enable-linger <user>
+[Unit]
+Description=Home Agent (personal research agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=HOME_AGENT_ENV_FILE=@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@REPO@/.venv/bin/home-agent serve
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+{
+  "name": "Home Agent",
+  "short_name": "Home Agent",
+  "start_url": "/#/chat",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#0f766e",
+  "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml"}]
+}

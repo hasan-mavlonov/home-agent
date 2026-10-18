@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Home Agent">
+  <title>Home Agent</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/styles.css?v=0.1.0">
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card" autocomplete="on">
+      <img src="/static/icon.svg" alt="" width="48" height="48">
+      <h1>Home Agent</h1>
+      <p id="login-hint" class="muted">Sign in to your agent.</p>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">Sign in</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <a href="#/chat" class="brand"><img src="/static/icon.svg" alt="" width="26" height="26"><span>Home Agent</span></a>
+      <span id="mode-badge" class="badge"></span>
+      <span class="spacer"></span>
+      <span id="active-indicator" class="active-indicator" hidden></span>
+      <button id="bell" class="icon-button" aria-label="Notifications" title="Notifications">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3a1.5 1.5 0 0 0-3 0v1.16A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z" fill="currentColor"/></svg>
+        <span id="bell-count" class="count" hidden></span>
+      </button>
+    </header>
+
+    <nav class="sidenav" aria-label="Main">
+      <a href="#/chat" data-nav="chat">Chat</a>
+      <a href="#/tasks" data-nav="tasks">Tasks</a>
+      <a href="#/opportunities" data-nav="opportunities">Opportunities <span class="pill" id="nav-new-opps" hidden></span></a>
+      <a href="#/drafts" data-nav="drafts">Email drafts</a>
+      <a href="#/schedules" data-nav="schedules">Schedules <span class="pill" id="nav-pending-schedules" hidden></span></a>
+      <a href="#/profile" data-nav="profile">Profile &amp; memory</a>
+      <a href="#/files" data-nav="files">Files</a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+
+    <main id="view" tabindex="-1"></main>
+
+    <nav class="bottomnav" aria-label="Main">
+      <a href="#/chat" data-nav="chat">Chat</a>
+      <a href="#/tasks" data-nav="tasks">Tasks</a>
+      <a href="#/opportunities" data-nav="opportunities">Opportunities</a>
+      <a href="#/drafts" data-nav="drafts">Drafts</a>
+      <a href="#/more" data-nav="more">More</a>
+    </nav>
+
+    <aside id="notifications" class="panel" hidden aria-label="Notifications">
+      <div class="panel-head"><strong>Notifications</strong><span class="spacer"></span>
+        <button id="notif-read-all" class="link">Mark all read</button>
+        <button id="notif-close" class="icon-button" aria-label="Close">&times;</button></div>
+      <div id="notif-list"></div>
+    </aside>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+  <script src="/static/app.js?v=0.1.0" defer></script>
+</body>
+</html>
