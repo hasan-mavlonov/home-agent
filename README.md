@@ -154,6 +154,11 @@ OLLAMA_NUM_CTX=32768
 LOCAL_ONLY=true          # optional: refuse any non-local model endpoint
 ```
 
+When a long task outgrows the context window, Home Agent shortens the oldest page text in what it sends to
+the model and keeps your request and the newest pages. Quote checks still use the full saved text. A larger
+`OLLAMA_NUM_CTX` keeps more but uses more memory. For LM Studio or llama.cpp, set
+`OPENAI_COMPAT_CONTEXT_TOKENS` to the server's context length.
+
 Local mode guarantees:
 
 - Tasks are pinned to the provider they started with.

@@ -27,6 +27,7 @@ from .base import (
     Usage,
     strip_think,
 )
+from .context import estimate_tokens, fit_messages
 from .pricing import apply_cost, override_price
 
 TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
@@ -129,18 +130,18 @@ class OllamaProvider(ModelProvider):
 
     async def complete(self, *, system: str, messages: list[dict], tools: list[ToolSpec], allow_tools: bool) -> ModelTurn:
         await self._ensure_local_model()
+        tool_defs = _tool_definitions(tools) if allow_tools and tools else []
+        reserve = min(8192, max(2048, self.num_ctx // 4))  # room for the reply (and thinking)
+        budget = self.num_ctx - reserve - estimate_tokens(system) - estimate_tokens(json.dumps(tool_defs))
         body: dict = {
             "model": self.model,
-            "messages": [{"role": "system", "content": system}, *messages],
+            "messages": [{"role": "system", "content": system}, *fit_messages(messages, budget)],
             "stream": False,
             "options": {"num_ctx": self.num_ctx},
             "keep_alive": self.keep_alive,
         }
-        if allow_tools and tools:
-            body["tools"] = [
-                {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
-                for t in tools
-            ]
+        if tool_defs:
+            body["tools"] = tool_defs
         if self.think != "default":
             body["think"] = self.think == "on"
         try:
@@ -226,6 +227,7 @@ class OpenAICompatProvider(ModelProvider):
         self.base_url = settings.openai_base_url.rstrip("/")
         self.model = settings.openai_model
         self.max_tokens = settings.openai_max_tokens
+        self.context_tokens = settings.openai_context_tokens
         self.is_local = is_local_endpoint(self.base_url)
         self.price = override_price(settings.model_input_price, settings.model_output_price)
         self._supports_tool_choice = True
@@ -251,17 +253,19 @@ class OpenAICompatProvider(ModelProvider):
         return messages
 
     async def complete(self, *, system: str, messages: list[dict], tools: list[ToolSpec], allow_tools: bool) -> ModelTurn:
+        tool_defs = _tool_definitions(tools)
+        if self.context_tokens:
+            reserve = min(self.max_tokens, self.context_tokens // 2)
+            budget = self.context_tokens - reserve - estimate_tokens(system) - estimate_tokens(json.dumps(tool_defs))
+            messages = fit_messages(messages, budget)
         body: dict = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, *messages],
             "max_tokens": self.max_tokens,
             "stream": False,
         }
-        if tools:
-            body["tools"] = [
-                {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
-                for t in tools
-            ]
+        if tool_defs:
+            body["tools"] = tool_defs
             if self._supports_tool_choice:
                 body["tool_choice"] = "auto" if allow_tools else "none"
             elif not allow_tools:
@@ -345,6 +349,13 @@ class OpenAICompatProvider(ModelProvider):
 
     async def aclose(self) -> None:
         await self.client.aclose()
+
+
+def _tool_definitions(tools: list[ToolSpec]) -> list[dict]:
+    return [
+        {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
+        for t in tools
+    ]
 
 
 def _error_text(response: httpx2.Response) -> str:

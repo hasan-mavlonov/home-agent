@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     openai_max_tokens: int = Field(
         8192, validation_alias=AliasChoices("OPENAI_COMPAT_MAX_TOKENS", "openai_max_tokens")
     )
+    openai_context_tokens: int | None = Field(
+        None, ge=2048, validation_alias=AliasChoices("OPENAI_COMPAT_CONTEXT_TOKENS", "openai_context_tokens")
+    )
 
     # --- web research ---------------------------------------------------------------
     search_provider: SearchProviderName = Field(
@@ -182,6 +185,7 @@ class Settings(BaseSettings):
         "gmail_client_secret",
         "model_input_price",
         "model_output_price",
+        "openai_context_tokens",
         mode="before",
     )
     @classmethod
