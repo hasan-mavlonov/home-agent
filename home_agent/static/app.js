@@ -521,8 +521,8 @@ function formatText(o) {
 
 const OPP_COLUMNS = [
   ["name", "Name"], ["category", "Category"], ["relevance_score", "Relevance"], ["eligibility_status", "Eligibility"],
-  ["deadline_date", "Deadline"], ["location", "Location / format"], ["cost", "Cost"], ["prize", "Prize / funding"],
-  ["application_url", "Apply"], ["sources", "Sources"], ["verification_status", "Verification"], ["actions", ""],
+  ["deadline_date", "Deadline"], ["location", "Where"], ["cost", "Cost"], ["prize", "Prize/funding"],
+  ["application_url", "Apply"], ["sources", "Sources"], ["verification_status", "Verification"],
 ];
 
 async function renderOpportunities() {
@@ -587,21 +587,20 @@ async function renderOpportunities() {
     const list = visible();
     const head = h("tr", {}, OPP_COLUMNS.map(([key, label]) => h("th", {
       class: key === prefs.sort ? "sorted" + (prefs.asc ? " asc" : "") : "",
-      onclick: key === "actions" ? null : () => { prefs.asc = prefs.sort === key ? !prefs.asc : true; prefs.sort = key; savePrefs(); draw(); },
+      onclick: () => { prefs.asc = prefs.sort === key ? !prefs.asc : true; prefs.sort = key; savePrefs(); draw(); },
     }, label)));
     const rows = list.map((o) => h("tr", { class: (o.is_new ? "is-new " : "") + (o.expired ? "is-expired" : "") },
-      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, o.organizer || ""), h("div", { class: "row" }, badges(o)), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null),
+      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, o.organizer || ""), h("div", { class: "row" }, badges(o)), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null, actionButtons(o)),
       h("td", {}, o.category),
-      h("td", { title: o.relevance_reason || "" }, h("strong", {}, o.relevance_score ?? "-"), h("div", { class: "small muted" }, truncate(o.relevance_reason, 70))),
-      h("td", {}, statusChip(o.eligibility_status || "unclear"), " ", factMark(o, "eligibility"), h("div", { class: "small" }, (o.eligibility || "").slice(0, 160))),
+      h("td", { title: o.relevance_reason || "" }, h("strong", {}, o.relevance_score ?? "-")),
+      h("td", { title: o.eligibility || "" }, statusChip(o.eligibility_status || "unclear"), " ", factMark(o, "eligibility"), h("div", { class: "small" }, truncate(o.eligibility, 90))),
       h("td", {}, factMark(o, "deadline"), " ", deadlineText(o), o.expired ? h("div", { class: "small check-bad" }, "Closed") : null),
       h("td", {}, factMark(o, "location"), " ", formatText(o)),
       h("td", {}, factMark(o, "cost"), " ", o.cost || "unknown"),
       h("td", {}, factMark(o, "prize"), " ", o.prize || "unknown"),
       h("td", {}, o.application_url ? [factMark(o, "application_url"), " ", linkTo(o.application_url, "Apply")] : h("span", { class: "muted" }, "unknown")),
       h("td", {}, sourcesList(o)),
-      h("td", {}, statusChip(o.verification_status), h("div", { class: "small muted" }, `checked ${fmtAgo(o.last_checked_at)}`)),
-      h("td", {}, actionButtons(o))));
+      h("td", {}, statusChip(o.verification_status), h("div", { class: "small muted" }, `checked ${fmtAgo(o.last_checked_at)}`))));
     tableWrap.replaceChildren(list.length ? h("table", { class: "data" }, h("thead", {}, head), h("tbody", {}, rows))
       : h("p", { class: "empty" }, items.length ? "Nothing matches the filters." : "No opportunities saved yet. Ask the agent to find some in Chat."));
     cards.replaceChildren(...(list.length ? list.map((o) => h("div", { class: "card opp-card" + (o.expired ? " is-expired" : "") },

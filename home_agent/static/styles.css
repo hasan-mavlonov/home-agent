@@ -236,7 +236,8 @@ table.data th.sorted::after { content: " ▾"; }
 table.data th.sorted.asc::after { content: " ▴"; }
 table.data tr.is-new { background: var(--accent-soft); }
 table.data tr.is-expired td { opacity: 0.6; }
-table.data td.name { min-width: 200px; }
+table.data td.name { min-width: 180px; }
+table.data td { max-width: 220px; }
 table.data td .facts { font-size: 0.78rem; }
 .fact { white-space: nowrap; }
 .fact-mark { font-weight: 700; margin-right: 0.15rem; }
