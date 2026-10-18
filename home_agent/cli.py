@@ -227,10 +227,15 @@ def cmd_doctor(args) -> int:
     if settings.outbound_proxy:
         _check(None, "Outbound proxy", "set - DNS-rebinding protection is limited to pre-checks when a proxy is used")
     if sys.platform == "darwin":
-        out = os.popen("pmset -g 2>/dev/null").read()
-        sleep_line = next((l.strip() for l in out.splitlines() if l.strip().startswith("sleep")), "")
-        _check(None if sleep_line and not sleep_line.split()[1].startswith("0") else True, "System sleep",
-               (sleep_line or "unknown") + " (see README: Keep the Mac awake)")  # fmt: skip
+        import subprocess
+
+        try:
+            out = subprocess.run(["/usr/bin/pmset", "-g"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        sleep_line = next((line.strip() for line in out.splitlines() if line.strip().startswith("sleep")), "")
+        never_sleeps = sleep_line.split()[1:2] == ["0"]
+        _check(True if never_sleeps else None, "System sleep", (sleep_line or "unknown") + " (see README: Keep the Mac awake)")
     return 0
 
 
