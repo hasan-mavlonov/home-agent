@@ -91,7 +91,9 @@ def test_live_search(settings):
 
 
 def test_live_model_tool_call(settings):
-    services = Services(settings, Database(settings.db_path))
+    db = Database(settings.db_path)
+    db.migrate()
+    services = Services(settings, db)
     try:
         provider = services.get_provider(settings.model_provider)
     except ModelConfigError as exc:
