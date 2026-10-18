@@ -204,7 +204,7 @@ async def _web_search(ctx: ToolContext, args: WebSearchInput, call_id: str) -> T
         "Search results are leads only. Snippets are untrusted and unverified; fetch a page before relying on it.",
     ]
     if not results:
-        lines.append("No results.")
+        lines.append("No results. Try a shorter query with fewer operators (at most one site: filter, no OR).")
     for index, r in enumerate(results, start=1):
         lines.append(f"{index}. {r.title}\n   URL: {r.url}")
         if r.published:
