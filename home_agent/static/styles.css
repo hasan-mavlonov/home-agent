@@ -277,6 +277,7 @@ table.data td .facts { font-size: 0.78rem; }
 
 /* misc */
 .status-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.status-grid > .card { margin-top: 0; }
 .check-ok { color: var(--ok); font-weight: 600; }
 .check-bad { color: var(--danger); font-weight: 600; }
 .check-warn { color: var(--warn); font-weight: 600; }
