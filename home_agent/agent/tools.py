@@ -379,7 +379,8 @@ async def _save_opportunity(ctx: ToolContext, args: SaveOpportunityInput, call_i
     if result["warnings"]:
         lines.append("Checks:\n" + "\n".join(f"- {w}" for w in result["warnings"]))
     verb = "Saved" if result["created"] else "Updated"
-    return ToolOutput("\n".join(lines), summary=f"{verb}: {args.name} ({result['verification_status']})",
+    note = "; the page may describe a past edition" if result["past_edition"] else ""
+    return ToolOutput("\n".join(lines), summary=f"{verb}: {args.name} ({result['verification_status']}{note})",
                       data={"opportunity_id": result["id"], "created": result["created"]})  # fmt: skip
 
 

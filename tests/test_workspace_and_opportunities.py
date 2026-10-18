@@ -116,3 +116,50 @@ def test_source_must_have_been_consulted(tmp_path):
     assert status == {"deadline": "verified", "eligibility": "verified", "prize": "unverified", "application_url": "unverified"}
     assert row["verification_status"] == "partially_verified"
     assert any("application URL" in w for w in result["warnings"])
+
+
+def test_quote_shortened_with_ellipsis_needs_every_part():
+    from home_agent.util import quote_in_text
+
+    page = "Prizes\n\n## Total prize pool: $17,000+\n\nAMD Prizes\n\n### $5,000 in prizes from AMD\n\nTotal: €1,011.50"
+    assert quote_in_text("Total prize pool: $17,000+...AMD Prizes $5,000", page)
+    assert quote_in_text("Total prize pool: $17,000+ [...] AMD Prizes $5,000", page)
+    assert not quote_in_text("Total prize pool: $17,000+...Evolus Track: €1,011.50", page)  # second part is stitched
+    assert not quote_in_text("Total prize pool: $17,000+...$5", page)  # parts too short to prove anything
+
+
+def test_fact_without_source_url_is_checked_on_the_cited_pages_only(tmp_path):
+    from home_agent.services.sources import TaskSources, record_fetch
+
+    db = _db(tmp_path)
+    task_id = db.insert("tasks", {"kind": "chat", "title": "t", "prompt": "p", "status": "running", "created_at": now_iso(), "updated_at": now_iso()})
+    for url, text in [("https://grants.example.org/ai-2026", "Applicants must be enrolled students. Free to apply."),
+                      ("https://other.example.org/event", "Deadline: 1 December 2026. Free to apply.")]:  # fmt: skip
+        record_fetch(db, task_id, url=url, final_url=url, ok=True, title="Page", text=text, links=[], status_code=200,
+                     content_type="text/html", error=None, kind="fetched")  # fmt: skip
+    facts = [{"field": "eligibility", "value": "students", "status": "verified", "quote": "Applicants must be enrolled students"},
+             {"field": "deadline", "value": "2026-12-01", "status": "verified", "quote": "Deadline: 1 December 2026"}]  # fmt: skip
+    checked, warnings = opp.check_facts(facts, TaskSources(db, task_id), ["https://grants.example.org/ai-2026"])
+    by_field = {f["field"]: f for f in checked}
+    assert by_field["eligibility"]["status"] == "verified"
+    assert by_field["eligibility"]["source_url"] == "https://grants.example.org/ai-2026"
+    # the deadline quote is only on a page that was not cited for this opportunity
+    assert by_field["deadline"]["status"] == "unverified" and by_field["deadline"]["check"] == "quote not found on the fetched page"
+    assert any("the cited pages" in w for w in warnings)
+
+
+def test_recap_page_is_flagged_as_a_possible_past_edition(tmp_path):
+    from home_agent.services.sources import TaskSources, record_fetch
+
+    db = _db(tmp_path)
+    task_id = db.insert("tasks", {"kind": "chat", "title": "t", "prompt": "p", "status": "running", "created_at": now_iso(), "updated_at": now_iso()})
+    url = "https://grants.example.org/ai-2026"
+    record_fetch(db, task_id, url=url, final_url=url, ok=True, title="[Recap] Global AI Grant 2026", text="Thanks to all teams.",
+                 links=[], status_code=200, content_type="text/html", error=None, kind="fetched")  # fmt: skip
+    result = opp.save_opportunity(db, task_id, base(), TaskSources(db, task_id), "Asia/Shanghai")
+    assert result["past_edition"]
+    assert any("finished or closed edition" in w for w in result["warnings"])
+    other = db.insert("tasks", {"kind": "chat", "title": "t", "prompt": "p", "status": "running", "created_at": now_iso(), "updated_at": now_iso()})
+    record_fetch(db, other, url=url, final_url=url, ok=True, title="Global AI Grant 2026", text="Applications close on 1 December 2026.",
+                 links=[], status_code=200, content_type="text/html", error=None, kind="fetched")  # fmt: skip
+    assert not opp.save_opportunity(db, other, base(), TaskSources(db, other), "Asia/Shanghai")["past_edition"]

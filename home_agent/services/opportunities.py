@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import difflib
 import io
+import re
 from datetime import date, datetime, time
 
 from ..db import Database, dumps, loads, now_iso
@@ -53,17 +54,24 @@ def is_expired(row: dict, user_tz: str) -> bool:
     return end is not None and end < today
 
 
-def check_facts(facts: list[dict], sources: TaskSources) -> tuple[list[dict], list[str]]:
-    """Downgrade 'verified' facts that are not backed by a page fetched in this task."""
+def check_facts(facts: list[dict], sources: TaskSources, cited_urls: list[str] | None = None) -> tuple[list[dict], list[str]]:
+    """Downgrade 'verified' facts that are not backed by a page fetched in this task.
+
+    The quote is looked up on the fact's own source page and then on the other pages cited for
+    this opportunity (never on unrelated pages, where a generic quote could match another event)."""
     checked, warnings = [], []
     for fact in facts:
         fact = dict(fact)
         field = fact.get("field")
-        status = fact.get("status", "unknown")
-        if status == "verified":
-            page = sources.fetched(fact.get("source_url"))
+        if fact.get("status", "unknown") == "verified":
             quote = (fact.get("quote") or "").strip()
-            if page is None:
+            pages = []
+            for url in [fact.get("source_url"), *(cited_urls or [])]:
+                page = sources.fetched(url)
+                if page is not None and all(page["id"] != p["id"] for p in pages):
+                    pages.append(page)
+            match = next((p for p in pages if quote and quote_in_text(quote, p["text"] or "")), None)
+            if not pages:
                 fact["status"] = "unverified"
                 fact["check"] = "source page was not fetched in this task"
                 warnings.append(f"{field}: marked verified but its source page was not fetched; saved as unverified")
@@ -71,15 +79,37 @@ def check_facts(facts: list[dict], sources: TaskSources) -> tuple[list[dict], li
                 fact["status"] = "unverified"
                 fact["check"] = "no supporting quote given"
                 warnings.append(f"{field}: marked verified without a quote; saved as unverified")
-            elif not quote_in_text(quote, page["text"] or ""):
+            elif match is None:
                 fact["status"] = "unverified"
                 fact["check"] = "quote not found on the fetched page"
-                warnings.append(f"{field}: the quote was not found on {fact.get('source_url')}; saved as unverified")
+                where = fact.get("source_url") or "the cited pages"
+                warnings.append(f"{field}: the quote was not found on {where}; saved as unverified")
             else:
+                fact["source_url"] = match["final_url"] or match["url"]
                 fact["check"] = "quote found on fetched page"
-                fact["checked_at"] = page["accessed_at"]
+                fact["checked_at"] = match["accessed_at"]
         checked.append(fact)
     return checked, warnings
+
+
+PAST_EDITION = re.compile(
+    r"\brecap\b|\bwinners (?:are |were |have been )?announced\b|\bresults (?:are |were |have been )?announced\b"
+    r"|\b(?:event|hackathon|competition|program|programme) (?:has )?ended\b"
+    r"|\b(?:applications?|registrations?|submissions?) (?:are |is |have |has )?(?:now )?closed\b",
+    re.I,
+)
+
+
+def past_edition_marker(sources: TaskSources, urls: list[str]) -> tuple[str, str] | None:
+    """(url, phrase) if a cited page's title or opening text suggests a finished or closed edition."""
+    for url in urls:
+        page = sources.fetched(url)
+        if page is None:
+            continue
+        found = PAST_EDITION.search(f"{page['title'] or ''}\n{(page['text'] or '')[:1500]}")
+        if found:
+            return page["final_url"] or page["url"], found.group(0)
+    return None
 
 
 def _fact_status(facts: list[dict], field: str) -> str:
@@ -142,9 +172,14 @@ def save_opportunity(db: Database, task_id: int | None, data: dict, sources: Tas
                      user_tz: str) -> dict:  # fmt: skip
     warnings: list[str] = []
     facts = data.get("facts") or []
+    past = None
     if sources is not None:
-        facts, fact_warnings = check_facts(facts, sources)
+        facts, fact_warnings = check_facts(facts, sources, data.get("source_urls") or [])
         warnings += fact_warnings
+        past = past_edition_marker(sources, data.get("source_urls") or [])
+        if past:
+            warnings.append(f'{past[0]} says "{past[1]}": it may describe a finished or closed edition. Confirm that this '
+                            "edition is still open before presenting it as an opportunity.")  # fmt: skip
         consulted, dropped = [], []
         for url in data.get("source_urls") or []:
             row = sources.consulted(url)
@@ -239,6 +274,7 @@ def save_opportunity(db: Database, task_id: int | None, data: dict, sources: Tas
         "created": created,
         "verification_status": row["verification_status"] if row else None,
         "expired": row["expired"] if row else False,
+        "past_edition": past is not None,
         "warnings": warnings,
     }
 

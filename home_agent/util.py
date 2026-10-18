@@ -66,8 +66,10 @@ def alnum_only(text: str) -> str:
     return re.sub(r"[\W_]+", "", normalize_for_match(text))
 
 
-def quote_in_text(quote: str, text: str) -> bool:
-    """True if `quote` (as copied by the model) appears in `text` (the fetched page)."""
+ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:\.{3}|\u2026)\s*\]|\.{3,}|\u2026)\s*")
+
+
+def _fragment_in_text(quote: str, text: str) -> bool:
     q = normalize_for_match(quote)
     if len(q) < 4:
         return False
@@ -75,6 +77,16 @@ def quote_in_text(quote: str, text: str) -> bool:
         return True
     qa = alnum_only(quote)
     return len(qa) >= 6 and qa in alnum_only(text)
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """True if `quote` (as copied by the model) appears in `text` (the fetched page).
+
+    A quote shortened with "..." matches only if every part appears on the page."""
+    parts = [p for p in ELLIPSIS.split(quote or "") if p.strip()]
+    if len(parts) > 1:
+        return all(_fragment_in_text(p, text) for p in parts)
+    return _fragment_in_text(quote, text)
 
 
 def slugify(text: str) -> str:
