@@ -236,6 +236,14 @@ The tests cover:
 The live tests read real pages, render with Chromium, and check redirect blocking against the internet. If
 `ANTHROPIC_API_KEY` or a search key is set, they also run a real model call and real searches.
 
+`test_live_end_to_end` runs the whole flow for real: request, search, reading pages, cited answer, saved
+opportunity, and email draft. It works without any API key if you point it at Ollama and a SearXNG instance:
+
+```bash
+HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=searxng \
+  SEARXNG_BASE_URL=http://127.0.0.1:8888 uv run pytest tests/live -k end_to_end -s
+```
+
 ## Data, backups, removal
 
 - Everything lives in `~/Library/Application Support/HomeAgent`: the SQLite database, logs, and the
