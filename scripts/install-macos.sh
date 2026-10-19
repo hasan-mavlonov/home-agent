@@ -69,7 +69,7 @@ uv run --no-dev home-agent doctor || true
 cat <<EOF
 
 Next steps
-  1. Put your API keys in $REPO/.env (ANTHROPIC_API_KEY, BRAVE_API_KEY or TAVILY_API_KEY), then:
+  1. Put your API keys in $REPO/.env (QWEN_API_KEY, and BRAVE_API_KEY or TAVILY_API_KEY), then:
        scripts/service.sh restart
   2. Open http://127.0.0.1:$(grep -E '^HOME_AGENT_PORT=' .env | cut -d= -f2 || echo 18789) on this Mac.
   3. Remote access over Tailscale: scripts/tailscale-serve.sh

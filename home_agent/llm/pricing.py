@@ -1,7 +1,7 @@
 """USD prices per million tokens, used to enforce per-task and daily spending caps.
 
-Values are Anthropic's published first-party list prices (input, output, 5-minute
-cache write, cache read). Unknown cloud models are charged at the most expensive
+Values are the providers' published list prices (Anthropic: input, output, 5-minute
+cache write, cache read; Qwen: see QWEN_PRICES). Unknown cloud models are charged at the most expensive
 known rate so caps err on the safe side; override with MODEL_INPUT_PRICE_PER_MTOK /
 MODEL_OUTPUT_PRICE_PER_MTOK in .env.
 """
@@ -33,6 +33,33 @@ def anthropic_price(model: str) -> tuple[tuple[float, float, float, float], bool
     for known, price in ANTHROPIC_PRICES.items():
         if model.startswith(known):
             return price, True
+    return CONSERVATIVE, False
+
+
+# Qwen on Alibaba Cloud Model Studio: international (Singapore) list prices in USD per
+# million tokens for requests up to 256K input tokens: (input, output, output in thinking
+# mode). Checked October 2026; see https://www.alibabacloud.com/help/en/model-studio/model-pricing
+# Mainland (Beijing) accounts are billed in CNY at their own rates; these figures are only
+# used to enforce the spending caps.
+QWEN_PRICES: dict[str, tuple[float, float, float]] = {
+    "qwen3.8-max": (2.0, 6.0, 6.0),
+    "qwen3.7-max": (2.5, 7.5, 7.5),
+    "qwen3.7-plus": (0.40, 1.60, 1.60),
+    "qwen3.8-flash": (0.15, 0.47, 0.47),
+    "qwen-plus": (0.40, 1.20, 4.0),
+    "qwen-flash": (0.05, 0.40, 0.40),
+}
+QWEN_LONG_INPUT = 256_000  # above this many input tokens per request, Model Studio charges up to 5x more
+QWEN_LONG_INPUT_FACTOR = 5.0
+
+
+def qwen_price(model: str, thinking: bool) -> tuple[tuple[float, float, float, float], bool]:
+    """(input, output, cache write, cache read) for apply_cost, and whether the model is known.
+    Unknown models are charged at the most expensive rate known for any provider."""
+    for known in sorted(QWEN_PRICES, key=len, reverse=True):  # "qwen-plus-2025-12-01" -> "qwen-plus"
+        if model == known or model.startswith(known + "-"):
+            in_p, out_p, think_p = QWEN_PRICES[known]
+            return (in_p, think_p if thinking else out_p, in_p, in_p), True
     return CONSERVATIVE, False
 
 

@@ -125,6 +125,8 @@ def test_ui_end_to_end(live_server, tmp_path):
                               ("files", "Files"), ("settings", "Settings")]:  # fmt: skip
             page.goto(f"{live_server}/#/{route}")
             page.wait_for_selector(f"h2:has-text('{marker}')")
+            if route == "settings":
+                assert page.locator("text=Claude effort").is_hidden()  # only shown when Claude is the provider
             if SHOTS and route in ("settings", "profile"):
                 page.wait_for_timeout(300)
                 page.screenshot(path=str(SHOTS / f"{route}-desktop.png"), full_page=True)
