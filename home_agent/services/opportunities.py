@@ -334,7 +334,7 @@ def save_opportunity(db: Database, task_id: int | None, data: dict, sources: Tas
         "created": created,
         "verification_status": row["verification_status"] if row else None,
         "expired": row["expired"] if row else False,
-        "past_edition": past is not None,
+        "past_edition": bool(past_editions),
         "warnings": warnings,
         "unconfirmed": unconfirmed,
         "past_editions": past_editions,

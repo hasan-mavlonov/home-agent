@@ -236,7 +236,8 @@ def test_recap_page_and_invented_deadline_are_reported(harness_factory):
         assert f'{RECAP} may describe a past edition (the title says "Recap"' in result
         assert "say so in your answer" in result
 
-        # the user sees both on the task ...
+        # the user sees both on the task, including in the save step's activity line ...
+        assert any(e["type"] == "tool_result" and "the page may describe a past edition" in e["summary"] for e in task["events"])
         checks = [e for e in task["events"] if e["type"] == "check"]
         assert any(e["data"].get("fields") == ["deadline"] for e in checks)
         assert any(e["data"].get("urls") == [RECAP] for e in checks)
