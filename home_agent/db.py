@@ -282,6 +282,10 @@ MIGRATIONS: list[str] = [
         detail TEXT
     );
     """,
+    # 2: notices from the latest check of an opportunity (e.g. "may describe a past edition")
+    """
+    ALTER TABLE opportunities ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]';
+    """,
 ]
 
 

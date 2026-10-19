@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import bisect
+import functools
 import re
 import unicodedata
 from datetime import datetime
@@ -66,17 +68,71 @@ def alnum_only(text: str) -> str:
     return re.sub(r"[\W_]+", "", normalize_for_match(text))
 
 
-ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:\.{3}|\u2026)\s*\]|\.{3,}|\u2026)\s*")
+# "...", "[...]", "(...)" in a normalised quote (NFKC already turned "…" into "...")
+ELLIPSIS = re.compile(r"\s*[\[(]?\s*(?:\.\s*){3,}[\])]?\s*")
+PART_EDGES = " ,;:.!?-()[]\"'"
+QUOTE_GAP = 500  # max characters skipped between the pieces of a "..." quote
 
 
-def _fragment_in_text(quote: str, text: str) -> bool:
+MAX_PIECE_HITS = 10_000  # bounds the work on repetitive pages; such a generic piece is no evidence anyway
+
+
+def _in_order(parts: list[str], text: str, max_gap: int) -> bool:
+    """Every part occurs in `text` in order, each starting at most `max_gap` characters after
+    the end of the previous one. One pass per part over its occurrences, so a repetitive
+    page costs at most MAX_PIECE_HITS steps per part."""
+    if len(parts) == 1:
+        return parts[0] in text
+    if not all(part in text for part in parts):
+        return False
+    ends: list[int] | None = None  # sorted end positions where the previous part can finish
+    for part in parts:
+        reachable = []
+        pos, hits = text.find(part), 0
+        while pos != -1:
+            hits += 1
+            if hits > MAX_PIECE_HITS:
+                return False
+            if ends is None:
+                reachable.append(pos + len(part))
+            else:
+                index = bisect.bisect_right(ends, pos)  # ends[index - 1] is the closest end at or before pos
+                if index and pos - ends[index - 1] <= max_gap:
+                    reachable.append(pos + len(part))
+            pos = text.find(part, pos + 1)
+        if not reachable:
+            return False
+        ends = reachable
+    return True
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """True if `quote` (as copied by the model) appears in `text` (the fetched page).
+
+    "..." in a quote marks skipped words. Every piece must then be on the page, in order and
+    close together, so pieces stitched from unrelated parts of a page do not count."""
     q = normalize_for_match(quote)
     if len(q) < 4:
         return False
-    if q in normalize_for_match(text):
+    page, page_alnum = _page_forms(text)
+    if q in page:
         return True
-    qa = alnum_only(quote)
-    return len(qa) >= 6 and qa in alnum_only(text)
+    parts = [p for p in (s.strip(PART_EDGES) for s in ELLIPSIS.split(q)) if p]
+    if len(parts) > 1 and sum(map(len, parts)) >= 4 and _in_order(parts, page, QUOTE_GAP):
+        return True
+    alnum_parts = [a for a in (alnum_only(p) for p in parts) if a]
+    if sum(map(len, alnum_parts)) < 6:
+        return False
+    # dropping spaces and punctuation shortens distances; shrink the allowed gap to match this page
+    gap = QUOTE_GAP * len(page_alnum) // max(1, len(page))
+    return _in_order(alnum_parts, page_alnum, gap)
+
+
+@functools.lru_cache(maxsize=8)
+def _page_forms(text: str) -> tuple[str, str]:
+    """Normalised and letters-and-digits-only page text. Cached: one save checks many quotes
+    against the same few pages."""
+    return normalize_for_match(text), alnum_only(text)
 
 
 def quote_in_text(quote: str, text: str) -> bool:

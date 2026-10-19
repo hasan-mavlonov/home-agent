@@ -65,8 +65,8 @@ class Fact(Strict):
     field: Literal[tuple(FACT_FIELDS)] = Field(description="Which detail this fact is about.")  # type: ignore[valid-type]
     value: str = Field(max_length=1000, description="The detail, in your words.")
     status: Literal["verified", "inferred", "unknown"] = Field(description="verified = stated on a page you fetched (give quote); inferred = your conclusion; unknown = not found.")
-    source_url: str | None = Field(None, description="Page the fact comes from (must be a page you fetched for 'verified').")
-    quote: str | None = Field(None, max_length=500, description="For verified facts: a short exact excerpt copied from that page.")
+    source_url: str | None = Field(None, description="Page the fact comes from (for 'verified', a page you fetched).")
+    quote: str | None = Field(None, max_length=500, description="For verified facts: one short passage copied exactly from that page, not paraphrased. Use '...' only to skip a few words inside that passage.")
 
 
 class Deadline(Strict):
@@ -378,6 +378,13 @@ async def _save_opportunity(ctx: ToolContext, args: SaveOpportunityInput, call_i
         lines.append("Note: by the dates saved, this opportunity has EXPIRED; say so in your answer.")
     if result["warnings"]:
         lines.append("Checks:\n" + "\n".join(f"- {w}" for w in result["warnings"]))
+    if result["unconfirmed"]:
+        ctx.emit("check", f"{args.name}: {', '.join(result['unconfirmed'])} could not be confirmed on the cited pages; "
+                          "saved as not confirmed", {"opportunity_id": result["id"], "fields": result["unconfirmed"]})  # fmt: skip
+    if result["past_editions"]:
+        ctx.emit("check", f"{args.name}: a cited page may describe a past edition; check the dates",
+                 {"opportunity_id": result["id"], "urls": [p["url"] for p in result["past_editions"]],
+                  "reasons": [r for p in result["past_editions"] for r in p["reasons"]]})  # fmt: skip
     verb = "Saved" if result["created"] else "Updated"
     note = "; the page may describe a past edition" if result["past_edition"] else ""
     return ToolOutput("\n".join(lines), summary=f"{verb}: {args.name} ({result['verification_status']}{note})",

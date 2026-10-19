@@ -504,7 +504,17 @@ const FACT_TITLES = {
 
 function factMark(opp, field) {
   const status = (opp.field_status || {})[field] || "unknown";
-  return h("span", { class: `fact-mark ${status}`, title: FACT_TITLES[status] }, FACT_MARKS[status]);
+  const check = (opp.field_checks || {})[field];
+  const title = check && status !== "verified" ? `${FACT_TITLES[status]} (${check})` : FACT_TITLES[status];
+  return h("span", { class: `fact-mark ${status}`, title, "aria-label": title }, FACT_MARKS[status]);
+}
+
+const NOTICE_LABELS = { past_edition: "May be a past edition" };
+
+function oppWarnings(o, compact) {
+  return (o.warnings || []).map((n) => compact
+    ? h("details", { class: "small opp-warn" }, h("summary", { class: "check-warn" }, `⚠ ${NOTICE_LABELS[n.kind] || "Check needed"}`), n.message)
+    : h("div", { class: "small check-warn opp-warn" }, `⚠ ${n.message}`));
 }
 
 function deadlineText(o) {
@@ -590,7 +600,7 @@ async function renderOpportunities() {
       onclick: () => { prefs.asc = prefs.sort === key ? !prefs.asc : true; prefs.sort = key; savePrefs(); draw(); },
     }, label)));
     const rows = list.map((o) => h("tr", { class: (o.is_new ? "is-new " : "") + (o.expired ? "is-expired" : "") },
-      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, o.organizer || ""), h("div", { class: "row" }, badges(o)), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null, actionButtons(o)),
+      h("td", { class: "name" }, h("strong", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name), h("div", { class: "small muted" }, o.organizer || ""), h("div", { class: "row" }, badges(o)), oppWarnings(o, true), o.notes ? h("div", { class: "small" }, `Note: ${o.notes}`) : null, actionButtons(o)),
       h("td", {}, o.category),
       h("td", { title: o.relevance_reason || "" }, h("strong", {}, o.relevance_score ?? "-")),
       h("td", { title: o.eligibility || "" }, statusChip(o.eligibility_status || "unclear"), " ", factMark(o, "eligibility"), h("div", { class: "small" }, truncate(o.eligibility, 90))),
@@ -607,6 +617,7 @@ async function renderOpportunities() {
       h("div", { class: "row" }, badges(o)),
       h("h3", {}, o.official_url ? linkTo(o.official_url, o.name) : o.name),
       h("div", { class: "small muted" }, [o.organizer, o.category].filter(Boolean).join(" · ")),
+      oppWarnings(o),
       h("dl", {},
         h("dt", {}, "Relevance"), h("dd", {}, `${o.relevance_score ?? "-"} - ${o.relevance_reason || ""}`),
         h("dt", {}, "Eligibility"), h("dd", {}, statusChip(o.eligibility_status || "unclear"), " ", factMark(o, "eligibility"), " ", o.eligibility || ""),

@@ -15,7 +15,7 @@ them, and runs recurring research only on schedules you set up or confirm.
 | Agent | Tool-calling loop (Claude API, Ollama, or any OpenAI-compatible server) with validated tool inputs, retries, cancellation, and limits on steps, tool calls, searches, page reads, time, tokens and dollars (per task and per day). Progress shows real tool activity only; model reasoning is never displayed. |
 | Durability | SQLite job queue. Every step is checkpointed and every tool call is recorded in a ledger, so after a crash or restart a task resumes where it was without repeating side effects. Closing the browser has no effect on running tasks. |
 | Research | Search through Brave, Tavily or your own SearXNG. Pages and PDFs are fetched and read; JavaScript-heavy pages are rendered in headless Chromium. Blocked pages, logins and CAPTCHAs are reported honestly, never bypassed. |
-| Honesty checks | A fact can only be marked *verified* if its quote is found on a page fetched in that task. Sources must be pages the agent actually consulted. Links in an answer that were never opened are flagged. Expired opportunities are marked, and pages that look like a past edition ("Recap", "winners announced", "registration closed") are flagged. |
+| Honesty checks | A fact can only be marked *verified* if its quote is found on a page fetched in that task and cited for that opportunity (a quote that appears only on some other page the task read does not count). A quote shortened with "..." passes only if every piece is on the page, in order, within 500 characters of the previous piece. Downgraded facts show why on hover and are listed on the task. Pages that look like a past edition (a title saying "Recap" or naming only earlier years, or "registration closed" near the top) get a notice on the opportunity. Sources must be pages the agent actually consulted. Links in an answer that were never opened are flagged. Expired opportunities are marked. |
 | Opportunities | Sortable table (cards on mobile): name, category, relevance, eligibility, deadline and time zone, location and format, cost, prize or funding, application link, sources with check dates, verification status. De-duplicated. You can bookmark, dismiss, add notes, and export to CSV. New finds are highlighted. |
 | Email | Drafts live in the app (copy, or open in your mail app). Optional Gmail integration creates Gmail drafts (`gmail.compose` scope only). Optional sending requires you to approve the exact recipients, subject, body and attachments; the backend enforces it, any edit cancels the approval, and a send can't happen twice. The agent has no send tool. |
 | Memory and schedules | Conversations, tasks, sources, opportunities, drafts and schedules are stored. Editable profile (starts with Shanghai, Uzbek citizen, AI undergraduate, MindForm, Defex Robotics) plus editable and deletable saved notes. Daily, weekly or monthly schedules in Asia/Shanghai by default; schedules the agent proposes stay inactive until you confirm them. In-app notifications. |
@@ -49,6 +49,26 @@ Then add your keys to `.env` (see the next section) and run:
 scripts/service.sh restart
 open http://127.0.0.1:18789
 ```
+
+## Install (Linux, systemd)
+
+```bash
+command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/hasan-mavlonov/home-agent.git ~/home-agent
+cd ~/home-agent
+uv sync --frozen --no-dev
+uv run --no-dev playwright install --with-deps chromium   # optional (JavaScript pages); --with-deps asks for sudo
+uv run --no-dev home-agent init                            # creates .env with a secret key
+uv run --no-dev home-agent set-password
+scripts/service.sh install                                 # systemd user service, starts now
+sudo loginctl enable-linger "$USER"                        # keep it running at boot and after logout
+```
+
+`scripts/service.sh status|restart|logs|stop|uninstall` work the same as on macOS (logs come from
+`journalctl --user`). Home Agent does not keep a Linux machine awake. Nothing runs while it is suspended,
+and schedule times missed during that time become a single catch-up run after it wakes. On an always-on
+host, disable suspend with
+`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`.
 
 ## Credentials and setup you still need
 
@@ -235,6 +255,8 @@ The tests cover:
 - the email approval rules and duplicate-send prevention, including concurrent clicks, lost responses and a
   restart mid-send;
 - cancellation, step and budget limits, and restart recovery without duplicated side effects;
+- the quote check (including "..." quotes and facts without a source page), past-edition notices, and a
+  mocked re-creation of a failure seen with a small local model (a recap page and an invented deadline);
 - exactly-once scheduled runs and coalescing of missed runs;
 - SSRF and redirect blocking, workspace confinement, and provider adapters.
 
@@ -262,7 +284,9 @@ HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=se
 - Research quality depends on the model. Small local models are much weaker than Claude at multi-step
   research and may ignore instructions. Check anything you act on: deadlines and eligibility rules change.
 - The quote check proves a quote appears on a fetched page. It does not prove the page is current or that
-  the quote means what the model says.
+  the quote means what the model says. The past-edition notice is a heuristic: it reads English phrases and
+  the years in the page title, so it misses some old pages and can flag a current page that mentions closed
+  registration for something else near the top.
 - Pages behind logins, CAPTCHAs or heavy bot protection are reported as inaccessible. Some JavaScript sites
   still render incompletely.
 - With `OUTBOUND_PROXY` set, the proxy resolves host names. The private-address check is then done before
@@ -271,4 +295,5 @@ HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=se
 - One user per installation. Gmail is the only email integration. Sending is off by default.
 - The launchd, Tailscale and pmset parts were written for macOS and checked with shellcheck, and the
   generated launchd plists parse as valid property lists. They could not be executed on a Mac from the
-  build environment. The systemd unit is provided for Linux hosts.
+  build environment. The systemd unit, filled in the way `scripts/service.sh install` fills it, passes
+  `systemd-analyze verify`; it was not started under a running systemd, which the build container lacks.

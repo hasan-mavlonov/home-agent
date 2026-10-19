@@ -3,7 +3,7 @@ request -> search -> page reading -> saved opportunity (quote-checked) -> email 
 
 from __future__ import annotations
 
-from helpers import ScriptedProvider, wait_for
+from helpers import ScriptedProvider, tool_json, wait_for
 
 from home_agent.search import SearchResult
 
@@ -98,9 +98,13 @@ def test_core_workflow_mocked(harness_factory):
         # cited answer stored and rendered; links not opened are flagged
         assert "Shanghai AI" in task["result_text"]
         assert "<table>" in task["result_html"]
-        check = [e for e in task["events"] if e["type"] == "check"]
-        assert check and "https://invented.example.org/page" in check[0]["data"]["urls"]
-        assert OFFICIAL not in check[0]["data"]["urls"]
+        checks = [e for e in task["events"] if e["type"] == "check"]
+        link_check = [e for e in checks if "link(s) in the answer" in e["summary"]]
+        assert link_check and "https://invented.example.org/page" in link_check[0]["data"]["urls"]
+        assert OFFICIAL not in link_check[0]["data"]["urls"]
+        # the fabricated cost quote is reported on the task, not only to the model
+        assert [e["data"]["fields"] for e in checks if "fields" in (e["data"] or {})] == [["cost"]]
+        assert not any("past edition" in e["summary"] for e in checks)
         fetched = [s for s in task["sources"] if s["kind"] == "fetched"]
         assert fetched and fetched[0]["ok"] == 1 and fetched[0]["accessed_at"]
 
@@ -182,3 +186,66 @@ def test_untrusted_content_is_marked_and_secrets_never_reach_the_model(harness_f
         everything = repr(seen["messages"]) + repr(seen["systems"])
         assert secret not in everything and "[redacted]" in page_result
         assert h.get("/api/drafts").json()["items"] == []  # nothing happened on the page's say-so
+
+
+RECAP = "https://events.example.org/ai-hackathon-act-iii"
+RECAP_PAGE = """<html><head><title>[Recap] Example AI Developer Hackathon: Act III</title></head><body>
+<h1>Example AI Developer Hackathon: Act III</h1>
+<p>Thank you for participating! Over 3,000 builders joined from 90 countries.</p>
+<p>Prize pool: $30,000 in cash and credits, split across three tracks.</p>
+<p>Teams of up to four people could take part online.</p>
+</body></html>"""
+
+
+def test_recap_page_and_invented_deadline_are_reported(harness_factory):
+    """Pattern from a live run with a small local model (MOCKED here): it read a recap of a past
+    event, invented a future deadline, gave facts without source_url, and stitched a quote with '...'."""
+    seen = {}
+
+    def after_save(messages):
+        seen["save_result"] = tool_json(messages)[0]
+        return ("text", "Saved one hackathon; its deadline is not confirmed.")
+
+    facts = [
+        {"field": "deadline", "value": "2026-11-30", "status": "verified", "quote": "Registration closes on November 30, 2026"},
+        {"field": "prize", "value": "$30,000", "status": "verified", "quote": "Prize pool: $30,000 ... three tracks"},
+        {"field": "format", "value": "online", "status": "verified", "quote": "Teams of up to four people could take part online"},
+    ]  # fmt: skip
+    opportunity = {**OPPORTUNITY, "name": "Example AI Developer Hackathon: Act III", "official_url": RECAP,
+                   "application_url": None, "source_urls": [RECAP], "facts": facts,
+                   "deadline": {"date": "2026-11-30", "text": "November 30, 2026"}}  # fmt: skip
+    h = harness_factory(
+        provider=ScriptedProvider([
+            lambda m: ("tools", [("fetch_page", {"url": RECAP})]),
+            lambda m: ("tools", [("save_opportunity", opportunity)]),
+            after_save,
+        ]),
+        pages={RECAP: (200, "text/html; charset=utf-8", RECAP_PAGE)},
+    )  # fmt: skip
+    with h:
+        h.login()
+        conversation = h.post("/api/conversations", json={}).json()
+        task_id = h.post(f"/api/conversations/{conversation['id']}/messages",
+                         json={"content": "Find an AI hackathon I can enter."}).json()["task"]["id"]  # fmt: skip
+        task = wait_for(lambda: (t := h.get(f"/api/tasks/{task_id}").json())["status"] in ("succeeded", "failed") and t)
+        assert task["status"] == "succeeded", task
+
+        # the model is told, in the tool result, what failed and that the page may be a past edition
+        result = seen["save_result"]
+        assert "deadline: the quote was not found on any fetched page cited for this opportunity" in result
+        assert f'{RECAP} may describe a past edition (the title says "Recap"' in result
+        assert "say so in your answer" in result
+
+        # the user sees both on the task ...
+        checks = [e for e in task["events"] if e["type"] == "check"]
+        assert any(e["data"].get("fields") == ["deadline"] for e in checks)
+        assert any(e["data"].get("urls") == [RECAP] for e in checks)
+
+        # ... and on the saved record
+        opp = h.get("/api/opportunities").json()["items"][0]
+        status = {f["field"]: f["status"] for f in opp["facts"]}
+        assert status == {"deadline": "unverified", "prize": "verified", "format": "verified"}
+        assert all(f["source_url"] == RECAP for f in opp["facts"] if f["status"] == "verified")
+        assert opp["field_checks"]["deadline"] == "quote not found on the pages cited for this opportunity"
+        assert [(n["kind"], n["url"]) for n in opp["warnings"]] == [("past_edition", RECAP)]
+        assert "may describe a past edition" in opp["warnings"][0]["message"]
