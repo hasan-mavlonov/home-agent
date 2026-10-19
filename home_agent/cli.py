@@ -169,7 +169,7 @@ def cmd_doctor(args) -> int:
                 _check(False, "Model connectivity", str(exc))
     except ModelConfigError as exc:
         _check(False, "Model provider", str(exc))
-    if provider_name != "anthropic":
+    if provider_name in ("ollama", "openai_compatible"):
         endpoint = settings.ollama_base_url if provider_name == "ollama" else (settings.openai_base_url or "")
         _check(is_local_endpoint(endpoint) or None, "Local model endpoint", endpoint or "not set")
 

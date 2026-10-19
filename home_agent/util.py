@@ -110,7 +110,8 @@ def quote_in_text(quote: str, text: str) -> bool:
     """True if `quote` (as copied by the model) appears in `text` (the fetched page).
 
     "..." in a quote marks skipped words. Every piece must then be on the page, in order and
-    close together, so pieces stitched from unrelated parts of a page do not count."""
+    close together, so pieces stitched from unrelated parts of a page do not count. Like a whole
+    quote, each piece needs at least 4 characters: "$5" proves nothing."""
     q = normalize_for_match(quote)
     if len(q) < 4:
         return False
@@ -118,7 +119,9 @@ def quote_in_text(quote: str, text: str) -> bool:
     if q in page:
         return True
     parts = [p for p in (s.strip(PART_EDGES) for s in ELLIPSIS.split(q)) if p]
-    if len(parts) > 1 and sum(map(len, parts)) >= 4 and _in_order(parts, page, QUOTE_GAP):
+    if len(parts) > 1 and any(len(p) < 4 for p in parts):
+        return False
+    if len(parts) > 1 and _in_order(parts, page, QUOTE_GAP):
         return True
     alnum_parts = [a for a in (alnum_only(p) for p in parts) if a]
     if sum(map(len, alnum_parts)) < 6:
@@ -133,16 +136,6 @@ def _page_forms(text: str) -> tuple[str, str]:
     """Normalised and letters-and-digits-only page text. Cached: one save checks many quotes
     against the same few pages."""
     return normalize_for_match(text), alnum_only(text)
-
-
-def quote_in_text(quote: str, text: str) -> bool:
-    """True if `quote` (as copied by the model) appears in `text` (the fetched page).
-
-    A quote shortened with "..." matches only if every part appears on the page."""
-    parts = [p for p in ELLIPSIS.split(quote or "") if p.strip()]
-    if len(parts) > 1:
-        return all(_fragment_in_text(p, text) for p in parts)
-    return _fragment_in_text(quote, text)
 
 
 def slugify(text: str) -> str:

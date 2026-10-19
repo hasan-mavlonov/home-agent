@@ -140,8 +140,8 @@ def test_quote_with_ellipsis_needs_every_piece_in_order_and_close():
     assert not quote_in_text("Round one opens ... Final round closes", pages)
     started = time.monotonic()
     assert not quote_in_text("aaaa ... aaaa ... aaaa ... aaaa ... aaab", "a" * 100_000 + "b")  # every piece is present
-    assert not quote_in_text("ab ab ... ab ab ... zz", "ab " * 9_000 + "c" * 600 + "zz")  # under the hit cap, too far
-    assert quote_in_text("ab ab ... ab ab ... zz", "ab " * 9_000 + "zz")
+    assert not quote_in_text("ab ab ... ab ab ... zzzz", "ab " * 9_000 + "c" * 600 + "zzzz")  # under the hit cap, too far
+    assert quote_in_text("ab ab ... ab ab ... zzzz", "ab " * 9_000 + "zzzz")
     assert time.monotonic() - started < 2  # repetitive pages cannot make the check explode
 
 
@@ -280,3 +280,29 @@ def test_upgrade_from_first_schema_adds_opportunity_warnings(tmp_path):
     assert db.scalar("PRAGMA user_version") == len(MIGRATIONS)
     row = opp.list_opportunities(db, "Asia/Shanghai")[0]
     assert row["name"] == "Old record" and row["warnings"] == []
+
+
+def test_quote_shortened_with_ellipsis_on_a_real_prize_section():
+    """Prize text as it appeared on a page read in a live run (from the parallel implementation's tests)."""
+    from home_agent.util import quote_in_text
+
+    page = "Prizes\n\n## Total prize pool: $17,000+\n\nAMD Prizes\n\n### $5,000 in prizes from AMD\n\nTotal: €1,011.50"
+    assert quote_in_text("Total prize pool: $17,000+...AMD Prizes $5,000", page)
+    assert quote_in_text("Total prize pool: $17,000+ [...] AMD Prizes $5,000", page)
+    assert not quote_in_text("Total prize pool: $17,000+...Evolus Track: €1,011.50", page)  # second piece is not on the page
+    assert not quote_in_text("Total prize pool: $17,000+...$5", page)  # a 2-character piece proves nothing
+
+
+def test_save_result_says_whether_a_cited_page_may_be_a_past_edition(tmp_path):
+    from datetime import datetime
+
+    from home_agent.services.sources import TaskSources
+
+    db = _db(tmp_path)
+    year = datetime.now().year
+    url = "https://grants.example.org/ai-2026"
+    task_id = _task_with_pages(db, {url: (f"[Recap] Global AI Grant {year}", "Thanks to all teams.")})
+    result = opp.save_opportunity(db, task_id, base(), TaskSources(db, task_id), "Asia/Shanghai")
+    assert result["past_edition"] and any("may describe a past edition" in w for w in result["warnings"])
+    other = _task_with_pages(db, {url: (f"Global AI Grant {year}", f"Applications close on 1 December {year}.")})
+    assert not opp.save_opportunity(db, other, base(), TaskSources(db, other), "Asia/Shanghai")["past_edition"]

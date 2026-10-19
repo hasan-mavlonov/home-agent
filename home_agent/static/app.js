@@ -955,6 +955,10 @@ async function renderSettings() {
   const provider = h("select", {}, settings.providers.map((p) => h("option", { value: p.name, selected: p.name === settings.model_provider, disabled: !p.allowed },
     `${p.label} - ${p.local ? "local" : "cloud"}${p.configured ? "" : " (not configured)"}${p.allowed ? "" : " (blocked by LOCAL_ONLY)"}`)));
   const effort = h("select", {}, ["low", "medium", "high", "xhigh", "max"].map((e) => h("option", { value: e, selected: e === settings.anthropic_effort }, e)));
+  const effortBox = h("div", { class: "stack" }, h("label", {}, "Claude effort (cost vs. thoroughness)"), effort);
+  const showEffort = () => { effortBox.hidden = provider.value !== "anthropic"; };
+  provider.addEventListener("change", showEffort);
+  showEffort();
   const tz = h("input", { value: settings.timezone, list: "tz-list" });
   const tzList = h("datalist", { id: "tz-list" }, ["Asia/Shanghai", "Asia/Tashkent", "Asia/Hong_Kong", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "UTC"].map((z) => h("option", { value: z })));
   const taskCap = h("input", { type: "number", step: "0.1", min: "0.1", value: settings.task_max_cost_usd });
@@ -995,7 +999,7 @@ async function renderSettings() {
         integ.model.ok ? statusLine(true, `${integ.model.provider} / ${integ.model.model || ""} (${integ.model.local ? "local: prompts stay on your machine/network" : "cloud API"})`) : statusLine(false, integ.model.error),
         settings.local_only ? h("div", { class: "notice ok small" }, "LOCAL_ONLY is on: cloud model providers are disabled.") : null,
         h("label", {}, "Provider for new tasks"), provider,
-        h("label", {}, "Claude effort (cost vs. thoroughness)"), effort,
+        effortBox,
         h("div", { class: "row" }, h("button", { class: "small", onclick: runTest("/api/integrations/test-model", modelOut) }, "Test model")), modelOut),
       h("div", { class: "card stack" }, h("h3", {}, "Web research"),
         integ.search.ok ? statusLine(true, `Search: ${integ.search.name}`) : statusLine(false, integ.search.error),

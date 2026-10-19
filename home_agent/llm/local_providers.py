@@ -220,6 +220,7 @@ class OpenAICompatProvider(ModelProvider):
     """
 
     name = "openai_compatible"
+    settings_hint = "OPENAI_COMPAT_* settings"
 
     def __init__(self, settings: Settings, transport: httpx2.AsyncBaseTransport | None = None):
         if not settings.openai_base_url or not settings.openai_model:
@@ -270,21 +271,20 @@ class OpenAICompatProvider(ModelProvider):
                 body["tool_choice"] = "auto" if allow_tools else "none"
             elif not allow_tools:
                 body.pop("tools")
-        response = await self._post(body)
-        if response.status_code == 400 and "tool_choice" in response.text and "tool_choice" in body:
+        status, data, error = await self._send(body)
+        if status == 400 and "tool_choice" in error and "tool_choice" in body:
             self._supports_tool_choice = False
             body.pop("tool_choice")
             if not allow_tools:
                 body.pop("tools", None)
-            response = await self._post(body)
-        if response.status_code in (401, 403):
-            raise ModelConfigError(f"The model endpoint rejected the API key (HTTP {response.status_code}).")
-        if response.status_code == 404:
-            raise ModelConfigError(f"The model endpoint returned 404 for model '{self.model}'. Check OPENAI_COMPAT_* settings.")
-        if response.status_code != 200:
-            raise ModelError(f"Model endpoint error ({response.status_code}): {_error_text(response)}",
-                             retryable=response.status_code == 429 or response.status_code >= 500)  # fmt: skip
-        data = response.json()
+            status, data, error = await self._send(body)
+        if status in (401, 403):
+            raise ModelConfigError(self._auth_error(status, error))
+        if status == 404 or "model_not_found" in error:
+            raise ModelConfigError(f"The model endpoint does not know model '{self.model}' ({error or 'HTTP 404'}). "
+                                   f"Check the {self.settings_hint}.")  # fmt: skip
+        if status != 200 or data is None:
+            raise ModelError(f"Model endpoint error ({status}): {error}", retryable=status == 429 or status >= 500)
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         raw_content = message.get("content") or ""
@@ -312,16 +312,32 @@ class OpenAICompatProvider(ModelProvider):
         raw_usage = data.get("usage") or {}
         usage = Usage(input_tokens=raw_usage.get("prompt_tokens") or 0, output_tokens=raw_usage.get("completion_tokens") or 0,
                       model=self.model)  # fmt: skip
-        if self.price:
-            apply_cost(usage, self.price)
-        elif not self.is_local:
-            usage.cost_known = False
+        self._charge(usage)
         finish = choice.get("finish_reason")
         stop = "tool_use" if calls else ("max_tokens" if finish == "length" else "end_turn")
         if not allow_tools:
             calls = []
             stop = "end_turn"
         return ModelTurn(assistant_message=assistant, text=text, tool_calls=calls, stop_reason=stop, usage=usage)
+
+    def _charge(self, usage: Usage) -> None:
+        if self.price:
+            apply_cost(usage, self.price)
+        elif not self.is_local:
+            usage.cost_known = False
+
+    def _auth_error(self, status: int, error: str = "") -> str:
+        return f"The model endpoint rejected the API key (HTTP {status})."
+
+    async def _send(self, body: dict) -> tuple[int, dict | None, str]:
+        """POST a chat completion. Returns (HTTP status, response JSON when 200, error text otherwise)."""
+        response = await self._post(body)
+        if response.status_code != 200:
+            return response.status_code, None, _error_text(response)
+        try:
+            return 200, response.json(), ""
+        except ValueError:
+            return 502, None, "the endpoint returned a response that is not JSON"
 
     async def _post(self, body: dict) -> httpx2.Response:
         try:
@@ -364,7 +380,9 @@ def _error_text(response: httpx2.Response) -> str:
         if isinstance(data, dict):
             error = data.get("error")
             if isinstance(error, dict):
-                return str(error.get("message") or error)[:300]
+                code = error.get("code") or error.get("type")
+                text = str(error.get("message") or error)
+                return (f"{text} [{code}]" if code and str(code) not in text else text)[:300]
             if error:
                 return str(error)[:300]
     except ValueError:

@@ -21,7 +21,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
-ProviderName = Literal["anthropic", "ollama", "openai_compatible"]
+ProviderName = Literal["qwen", "anthropic", "ollama", "openai_compatible"]
+QwenRegion = Literal["auto", "intl", "cn"]
 SearchProviderName = Literal["brave", "tavily", "searxng", "none"]
 
 
@@ -56,7 +57,7 @@ class Settings(BaseSettings):
     prevent_sleep: bool = Field(True, validation_alias=AliasChoices("HOME_AGENT_PREVENT_SLEEP", "prevent_sleep"))
 
     # --- model providers ----------------------------------------------------------
-    model_provider: ProviderName = Field("anthropic", validation_alias=AliasChoices("MODEL_PROVIDER", "model_provider"))
+    model_provider: ProviderName = Field("qwen", validation_alias=AliasChoices("MODEL_PROVIDER", "model_provider"))
     local_only: bool = Field(False, validation_alias=AliasChoices("LOCAL_ONLY", "local_only"))
     model_request_timeout: float = Field(
         600.0, validation_alias=AliasChoices("MODEL_REQUEST_TIMEOUT_SECONDS", "model_request_timeout")
@@ -66,6 +67,19 @@ class Settings(BaseSettings):
     )
     model_output_price: float | None = Field(
         None, validation_alias=AliasChoices("MODEL_OUTPUT_PRICE_PER_MTOK", "model_output_price")
+    )
+
+    # Qwen through Alibaba Cloud Model Studio (DashScope), OpenAI-compatible API
+    qwen_api_key: SecretStr | None = Field(
+        None, validation_alias=AliasChoices("QWEN_API_KEY", "DASHSCOPE_API_KEY", "qwen_api_key")
+    )
+    qwen_model: str = Field("qwen-plus", validation_alias=AliasChoices("QWEN_MODEL", "qwen_model"))
+    qwen_region: QwenRegion = Field("auto", validation_alias=AliasChoices("QWEN_REGION", "qwen_region"))
+    qwen_base_url: str | None = Field(None, validation_alias=AliasChoices("QWEN_BASE_URL", "qwen_base_url"))
+    qwen_thinking: bool = Field(False, validation_alias=AliasChoices("QWEN_THINKING", "qwen_thinking"))
+    qwen_max_tokens: int = Field(8192, ge=256, validation_alias=AliasChoices("QWEN_MAX_TOKENS", "qwen_max_tokens"))
+    qwen_context_tokens: int = Field(
+        128_000, ge=16_000, le=1_000_000, validation_alias=AliasChoices("QWEN_CONTEXT_TOKENS", "qwen_context_tokens")
     )
 
     anthropic_api_key: SecretStr | None = Field(
@@ -166,6 +180,7 @@ class Settings(BaseSettings):
         "gmail_client_id",
         "gmail_redirect_uri",
         "openai_model",
+        "qwen_base_url",
         "browser_executable_path",
         "browser_channel",
         mode="before",
@@ -176,10 +191,18 @@ class Settings(BaseSettings):
             return None
         return v
 
+    @field_validator("qwen_model", "qwen_region", "qwen_thinking", "qwen_max_tokens", "qwen_context_tokens", mode="before")
+    @classmethod
+    def _blank_to_default(cls, v, info):
+        if isinstance(v, str) and not v.strip():
+            return cls.model_fields[info.field_name].default
+        return v
+
     @field_validator(
         "secret_key",
         "anthropic_api_key",
         "openai_api_key",
+        "qwen_api_key",
         "brave_api_key",
         "tavily_api_key",
         "gmail_client_secret",
@@ -231,6 +254,7 @@ class Settings(BaseSettings):
             self.secret_key,
             self.anthropic_api_key,
             self.openai_api_key,
+            self.qwen_api_key,
             self.brave_api_key,
             self.tavily_api_key,
             self.gmail_client_secret,

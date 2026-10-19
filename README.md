@@ -12,7 +12,7 @@ them, and runs recurring research only on schedules you set up or confirm.
 
 | Area | What you get |
 |---|---|
-| Agent | Tool-calling loop (Claude API, Ollama, or any OpenAI-compatible server) with validated tool inputs, retries, cancellation, and limits on steps, tool calls, searches, page reads, time, tokens and dollars (per task and per day). Progress shows real tool activity only; model reasoning is never displayed. |
+| Agent | Tool-calling loop (Qwen on Alibaba Cloud Model Studio, Claude API, Ollama, or any OpenAI-compatible server) with validated tool inputs, retries, cancellation, and limits on steps, tool calls, searches, page reads, time, tokens and dollars (per task and per day). Progress shows real tool activity only; model reasoning is never displayed. |
 | Durability | SQLite job queue. Every step is checkpointed and every tool call is recorded in a ledger, so after a crash or restart a task resumes where it was without repeating side effects. Closing the browser has no effect on running tasks. |
 | Research | Search through Brave, Tavily or your own SearXNG. Pages and PDFs are fetched and read; JavaScript-heavy pages are rendered in headless Chromium. Blocked pages, logins and CAPTCHAs are reported honestly, never bypassed. |
 | Honesty checks | A fact can only be marked *verified* if its quote is found on a page fetched in that task and cited for that opportunity (a quote that appears only on some other page the task read does not count). A quote shortened with "..." passes only if every piece is on the page, in order, within 500 characters of the previous piece. Downgraded facts show why on hover and are listed on the task. Pages that look like a past edition (a title saying "Recap" or naming only earlier years, or "registration closed" near the top) get a notice on the opportunity. Sources must be pages the agent actually consulted. Links in an answer that were never opened are flagged. Expired opportunities are marked. |
@@ -74,7 +74,8 @@ host, disable suspend with
 
 | What | Needed for | Where |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | The default cloud model (`claude-opus-5-5`) | [console.anthropic.com](https://console.anthropic.com). Usage-billed; **a Claude.ai or Claude Code subscription does not include API access.** |
+| `QWEN_API_KEY` | The default model (Qwen, `qwen-plus`) | Alibaba Cloud Model Studio console: [international](https://modelstudio.console.alibabacloud.com) or [mainland China (百炼)](https://bailian.console.aliyun.com). Usage-billed. See [Qwen](#qwen). |
+| `ANTHROPIC_API_KEY` (optional) | Claude instead of Qwen (`MODEL_PROVIDER=anthropic`) | [console.anthropic.com](https://console.anthropic.com). Usage-billed; **a Claude.ai or Claude Code subscription does not include API access.** |
 | `BRAVE_API_KEY` **or** `TAVILY_API_KEY` **or** `SEARXNG_BASE_URL` | Web search | Brave: [brave.com/search/api](https://brave.com/search/api/) (monthly free credit, then about $5 per 1,000 searches). Tavily: [tavily.com](https://tavily.com) (free monthly credits). Or your own SearXNG instance with `formats: [html, json]`. |
 | Ollama (optional) | Local model | `brew install ollama && brew services start ollama`, then `uv run home-agent recommend-model` |
 | Gmail OAuth client (optional) | Gmail drafts and approved sending | See [Gmail](#gmail-optional) |
@@ -83,13 +84,43 @@ host, disable suspend with
 Without a model key or a local model, tasks fail with a message saying exactly what is missing. Without a
 search provider, the agent says search is unavailable. Neither case produces made-up results.
 
-If this Mac is in mainland China: `api.anthropic.com`, Brave and Google may not be reachable without a VPN.
-Anthropic offers its API only in [supported countries](https://www.anthropic.com/supported-countries), so
-check that your use complies. Alternatives are a local model, or an OpenAI-compatible provider that serves
-your region (set `MODEL_PROVIDER=openai_compatible` with its URL, key, model, and prices). If you use a VPN
+If this Mac is in mainland China: Qwen with a mainland Model Studio account uses an endpoint in Beijing.
+`api.anthropic.com`, Brave and Google may not be reachable without a VPN, and Anthropic offers its API only in
+[supported countries](https://www.anthropic.com/supported-countries). If you use a VPN
 client with a local HTTP proxy, set `OUTBOUND_PROXY=http://127.0.0.1:7890`. If the client uses fake-IP DNS
 (for example Clash), also set `FETCH_ALLOWED_EXTRA_CIDRS=198.18.0.0/15`. Mirrors can speed up installation: `UV_INDEX_URL` for PyPI, `UV_PYTHON_INSTALL_MIRROR` for the Python
 download, and `PLAYWRIGHT_DOWNLOAD_HOST` for Chromium.
+
+## Qwen
+
+Qwen is the default model provider. Put your key in `.env` and restart:
+
+```
+MODEL_PROVIDER=qwen
+QWEN_API_KEY=sk-...
+QWEN_MODEL=qwen-plus
+```
+
+- **Region.** A key works only in the region where it was created. With `QWEN_REGION=auto` (the default)
+  Home Agent tries the international endpoint (Singapore) and then mainland China (Beijing), and keeps the
+  one that accepts the key. Set `intl` or `cn` to skip the probe, or `QWEN_BASE_URL` for any other endpoint
+  your console shows. `uv run home-agent doctor --live` says which endpoint answered.
+- **Model.** `qwen-plus` (USD 0.40 input / 1.20 output per million tokens) is the default. `qwen3.8-max`
+  (2.00 / 6.00) is stronger at multi-step research; with it, raise `TASK_MAX_COST_USD` to about 5.
+  `qwen-flash` (0.05 / 0.40) is the cheapest. Any model ID from the console works; prices for models Home
+  Agent does not know are assumed to be the highest, so the caps still hold. Set
+  `MODEL_INPUT_PRICE_PER_MTOK` and `MODEL_OUTPUT_PRICE_PER_MTOK` to give the real price.
+- **Thinking.** Off by default (`QWEN_THINKING=false`). Turning it on usually improves research but is
+  slower, and on `qwen-plus` output then costs 4.00 per million tokens. Models that always think are
+  handled automatically. The model's reasoning is never stored or shown.
+- **Cost caps.** Prices above are Model Studio's international list prices, checked in October 2026. A
+  mainland account is billed in CNY at its own rates; Home Agent applies the international USD prices to
+  the caps.
+- **Content filter.** Model Studio rejects requests containing text its filter flags. When that happens,
+  Home Agent removes the newest page from what the model sees, retries (up to 3 times), and notes it in the
+  task's activity. If the rejection persists, the task fails with that reason.
+- **Context.** Each step resends the conversation. `QWEN_CONTEXT_TOKENS` (default 128000) shortens the
+  oldest page text so a request stays under that size, which keeps the cost per step bounded.
 
 ## Everyday commands
 
@@ -192,6 +223,7 @@ LM Studio and `llama-server --jinja` work through `MODEL_PROVIDER=openai_compati
 
 | Service | When | What is sent |
 |---|---|---|
+| Qwen (`dashscope-intl.aliyuncs.com` or `dashscope.aliyuncs.com`) | When the provider is `qwen` (the default) | Prompts, profile, tool results (page text) |
 | Claude API (`api.anthropic.com`) | Only when the provider is `anthropic` | Prompts, profile, tool results (page text) |
 | OpenAI-compatible endpoint | Only when configured | Same as above (stays local if the URL is local) |
 | Brave / Tavily / SearXNG | Each web search | The search query only |
@@ -255,13 +287,16 @@ The tests cover:
 - the email approval rules and duplicate-send prevention, including concurrent clicks, lost responses and a
   restart mid-send;
 - cancellation, step and budget limits, and restart recovery without duplicated side effects;
+- the Qwen adapter against a simulated Model Studio: streamed tool calls, region detection, models that
+  always think, unknown prices, the content filter, and a full agent run;
 - the quote check (including "..." quotes and facts without a source page), past-edition notices, and a
   mocked re-creation of a failure seen with a small local model (a recap page and an invented deadline);
 - exactly-once scheduled runs and coalescing of missed runs;
 - SSRF and redirect blocking, workspace confinement, and provider adapters.
 
 The live tests read real pages, render with Chromium, and check redirect blocking against the internet. If
-`ANTHROPIC_API_KEY` or a search key is set, they also run a real model call and real searches.
+a model key (`QWEN_API_KEY` or `ANTHROPIC_API_KEY`) or a search key is set, they also run a real model call
+and real searches.
 
 `test_live_end_to_end` runs the whole flow for real: request, search, reading pages, cited answer, saved
 opportunity, and email draft. It works without any API key if you point it at Ollama and a SearXNG instance:
@@ -281,7 +316,11 @@ HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=se
 
 ## Known limitations
 
-- Research quality depends on the model. Small local models are much weaker than Claude at multi-step
+- Qwen support was tested against a simulated Model Studio API built from Alibaba's documentation, not
+  against the live service, because the build environment cannot reach it. Run
+  `uv run home-agent doctor --live` once after adding your key; it makes one tiny request and reports the
+  endpoint that answered.
+- Research quality depends on the model. Small local models are much weaker than Qwen or Claude at multi-step
   research and may ignore instructions. Check anything you act on: deadlines and eligibility rules change.
 - The quote check proves a quote appears on a fetched page. It does not prove the page is current or that
   the quote means what the model says. The past-edition notice is a heuristic: it reads English phrases and

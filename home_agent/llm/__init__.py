@@ -10,11 +10,20 @@ from __future__ import annotations
 from ..config import Settings
 from .base import LocalModeViolation, ModelConfigError, ModelError, ModelProvider
 
-PROVIDERS = ("anthropic", "ollama", "openai_compatible")
+PROVIDERS = ("qwen", "anthropic", "ollama", "openai_compatible")
 
 
 def build_provider(settings: Settings, name: str | None = None) -> ModelProvider:
     name = name or settings.model_provider
+    if name == "qwen":
+        if settings.local_only:
+            raise LocalModeViolation(
+                "LOCAL_ONLY=true: Qwen on Alibaba Cloud Model Studio is a cloud service, so it is disabled. "
+                "Use MODEL_PROVIDER=ollama or openai_compatible with a local endpoint."
+            )
+        from .qwen_provider import QwenProvider
+
+        return QwenProvider(settings)
     if name == "anthropic":
         if settings.local_only:
             raise LocalModeViolation(
@@ -45,6 +54,15 @@ def build_provider(settings: Settings, name: str | None = None) -> ModelProvider
 def configured_providers(settings: Settings) -> list[dict]:
     """Providers the user could switch to in Settings, with whether they look configured."""
     out = []
+    out.append(
+        {
+            "name": "qwen",
+            "label": f"Qwen ({settings.qwen_model})",
+            "configured": settings.qwen_api_key is not None,
+            "local": False,
+            "allowed": not settings.local_only,
+        }
+    )
     out.append(
         {
             "name": "anthropic",
