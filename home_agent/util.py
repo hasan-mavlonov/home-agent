@@ -135,6 +135,16 @@ def _page_forms(text: str) -> tuple[str, str]:
     return normalize_for_match(text), alnum_only(text)
 
 
+def quote_in_text(quote: str, text: str) -> bool:
+    """True if `quote` (as copied by the model) appears in `text` (the fetched page).
+
+    A quote shortened with "..." matches only if every part appears on the page."""
+    parts = [p for p in ELLIPSIS.split(quote or "") if p.strip()]
+    if len(parts) > 1:
+        return all(_fragment_in_text(p, text) for p in parts)
+    return _fragment_in_text(quote, text)
+
+
 def slugify(text: str) -> str:
     text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii").lower()
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
