@@ -173,6 +173,17 @@ def cmd_doctor(args) -> int:
         endpoint = settings.ollama_base_url if provider_name == "ollama" else (settings.openai_base_url or "")
         _check(is_local_endpoint(endpoint) or None, "Local model endpoint", endpoint or "not set")
 
+    from .agent.sandbox import ScriptRunner
+    from .services.workspace import Workspace
+
+    scripts = ScriptRunner(settings, Workspace(settings.workspace_dir))
+    if not scripts.available:
+        _check(None, "Script sandbox", scripts.reason)
+    else:
+        _check(True, "Script sandbox", scripts.reason)
+        for name, ok, detail in asyncio.run(scripts.self_test()):
+            _check(ok, f"  {name}", detail)
+
     if settings.search_provider == "none":
         _check(None, "Web search", "disabled (SEARCH_PROVIDER=none)")
     else:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -34,6 +35,38 @@ TOOL_TIMEOUT = 150.0
 READ_CONCURRENCY = 3
 MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_CHARS = 6000
+
+# A reply that promises work ("I'll create the script...") or reports work as done ("I've saved
+# report.csv") while no tool has run in the task. Matching only makes the loop ask the model,
+# once, to act with its tools; plain answers to questions are left alone.
+PROMISES_ACTION = re.compile(
+    r"\b(I'?ll|I will|I am going to|I'm going to|let me|now I'll|I can now|one moment|please wait|stand by)\b"
+    r"|我将|我会|让我|请稍等",
+    re.I,
+)
+CLAIMS_ACTION = re.compile(
+    r"\bI(?:'ve| have)? (?:just )?(?:created|written|wrote|saved|run|ran|executed|searched|fetched|downloaded|generated|"
+    r"drafted|scheduled|checked|verified|tested|opened|read)\b"
+    r"|\b(?:has|have) been (?:created|saved|written|executed|generated|run|downloaded)\b"
+    r"|\bexit (?:code|status) (?:was |is |of )?\d"
+    r"|已(?:经)?(?:创建|生成|运行|执行|保存|写入)",
+    re.I,
+)
+CLAIMS_SCRIPT_RUN = re.compile(
+    r"\b(?:I(?:'ve| have)? (?:run|ran|executed) (?:the|your|a|it)|exit (?:code|status)|the (?:script|program) "
+    r"(?:printed|output|ran|produced))\b",
+    re.I,
+)
+ACTION_NUDGE = (
+    "[Home Agent] You replied without calling any tool, but your reply describes doing work. Nothing has been "
+    "executed in this task yet. If the request needs action, do it now with your tools (for example write_file, then "
+    "run_script) and report what actually happened. If no tool can do it, say so plainly. If it needs no action, "
+    "repeat your answer without promising or claiming actions."
+)
+NO_TOOLS_NOTICE = ("\n\n> **Home Agent:** no tools ran during this task, so nothing described above was actually "
+                   "executed, created or checked.")  # fmt: skip
+NO_SCRIPT_NOTICE = ("\n\n> **Home Agent:** no script ran successfully during this task, so any script output or exit "
+                    "status described above was not produced by this app.")  # fmt: skip
 
 
 @dataclass
@@ -89,6 +122,9 @@ def _summarize_call(name: str, args: dict | None) -> str:
         return f"{'Reading' if name == 'read_file' else 'Writing'} file {truncate(str(args.get('path', '')), 100)}"
     if name == "list_files":
         return "Listing workspace files"
+    if name == "run_script":
+        extra = " " + " ".join(str(a) for a in args.get("args") or []) if args.get("args") else ""
+        return f"Running script {truncate(str(args.get('path', '')) + extra, 120)}"
     return f"Calling {name}"
 
 
@@ -136,14 +172,15 @@ class AgentRunner:
         profile_text = profile_service.render_profile(profile_service.get_profile(self.db))
         memories_text = profile_service.render_memories(profile_service.list_memories(self.db))
         now = utcnow()
-        system = build_system_prompt(profile_text, memories_text, self.tz, now)
+        scripts = self.services.scripts.describe() if getattr(self.services, "scripts", None) else None
+        system = build_system_prompt(profile_text, memories_text, self.tz, now, scripts)
         first = first_turn_text(self.task["prompt"], self.tz, now, self.task["kind"])
         return {
             "v": 1,
             "provider": self.provider.name,
             "model": self.provider.model,
             "system": system,
-            "tools": [t.name for t in tools_for(self.task["kind"])],
+            "tools": [t.name for t in tools_for(self.task["kind"], self.services)],
             "messages": self.provider.initial_messages(self._history(), first),
             "pending": [],
             "steps": 0,
@@ -159,6 +196,8 @@ class AgentRunner:
             "wrap_up": False,
             "wrap_up_turns": 0,
             "new_opportunities": [],
+            "succeeded_tools": [],
+            "action_nudges": 0,
         }
 
     # -- main --------------------------------------------------------------------------
@@ -313,6 +352,21 @@ class AgentRunner:
             self._checkpoint()
             return None
         text = turn.text.strip()
+        executed = st["tool_calls"]
+        if text and not st["wrap_up"] and executed == 0 and st.get("action_nudges", 0) == 0 and (
+            PROMISES_ACTION.search(text) or CLAIMS_ACTION.search(text)
+        ):
+            st["action_nudges"] = 1
+            st["messages"].extend(self.provider.tool_results_messages([], ACTION_NUDGE))
+            self._event("check", "The model answered without running any tool but described doing work; asked it to act")
+            self._checkpoint()
+            return None
+        if text and executed == 0 and (CLAIMS_ACTION.search(text) or PROMISES_ACTION.search(text)):
+            text += NO_TOOLS_NOTICE
+            self._event("check", "The answer describes actions, but no tool ran in this task")
+        elif text and executed and CLAIMS_SCRIPT_RUN.search(text) and "run_script" not in st.get("succeeded_tools", []):
+            text += NO_SCRIPT_NOTICE
+            self._event("check", "The answer describes running a script, but no script ran successfully in this task")
         if not text:
             if not st["wrap_up"]:
                 st["wrap_up"] = True
@@ -358,6 +412,10 @@ class AgentRunner:
             self._check_cancel()
             results[call.id] = await self._execute(call)
         ordered = [results[c.id] for c in calls]
+        succeeded = st.setdefault("succeeded_tools", [])
+        for result in ordered:
+            if not result.is_error and result.name not in succeeded:
+                succeeded.append(result.name)
         note = None
         soft = self._limit_reason(hard=False)
         if soft and not st["wrap_up"]:
@@ -374,6 +432,10 @@ class AgentRunner:
             return ToolResult(call.id, call.name, ledger["output"] or "", bool(ledger["is_error"]))
         tool = TOOLS_BY_NAME[call.name]
         summary = _summarize_call(call.name, call.input)
+        if ledger is not None and not tool.rerun_safe:
+            recovered = await self._recover_interrupted(tool, call)
+            if recovered is not None:
+                return recovered
         if ledger is None:
             self.db.execute(
                 "INSERT OR IGNORE INTO tool_calls (task_id, call_id, name, input, status, started_at) VALUES (?, ?, ?, ?, 'started', ?)",
@@ -388,10 +450,13 @@ class AgentRunner:
                 output = ToolOutput(error, is_error=True, summary="Invalid input")
             else:
                 ctx = ToolContext(services=self.services, task=self.task, state=self.state, limits=self.limits, tz=self.tz)
+                limit = TOOL_TIMEOUT
+                if call.name == "run_script":  # the script has its own time limit; leave room for it
+                    limit = max(TOOL_TIMEOUT, self.services.scripts.max_seconds + 30)
                 try:
-                    output = await asyncio.wait_for(tool.handler(ctx, args, call.id), timeout=TOOL_TIMEOUT)
+                    output = await asyncio.wait_for(tool.handler(ctx, args, call.id), timeout=limit)
                 except asyncio.TimeoutError:
-                    output = ToolOutput(f"The tool timed out after {int(TOOL_TIMEOUT)} s.", is_error=True, summary="Timed out")
+                    output = ToolOutput(f"The tool timed out after {int(limit)} s.", is_error=True, summary="Timed out")
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -403,6 +468,28 @@ class AgentRunner:
             (content, 1 if output.is_error else 0, now_iso(), self.task_id, call.id),
         )
         self._event("tool_error" if output.is_error else "tool_result", output.summary or ("Error" if output.is_error else "Done"),
+                    {"tool": call.name, "call_id": call.id, **(output.data or {})})  # fmt: skip
+        return ToolResult(call.id, call.name, content, output.is_error)
+
+    async def _recover_interrupted(self, tool, call: ToolCall) -> ToolResult | None:
+        """A call that started before a crash or restart and is not safe to repeat: report what
+        happened from its own records. None means it never started, so running it now is safe."""
+        output: ToolOutput | None = None
+        args, error = validate_input(tool, call.input)
+        if not error and tool.recover is not None:
+            ctx = ToolContext(services=self.services, task=self.task, state=self.state, limits=self.limits, tz=self.tz)
+            output = await tool.recover(ctx, args, call.id)
+            if output is None:
+                return None
+        if output is None:
+            output = ToolOutput(f"The {call.name} call was interrupted by a restart and was not run again, because "
+                                "repeating it could duplicate its effects.", is_error=True, summary="Interrupted; not repeated")  # fmt: skip
+        content = scrub(output.content, self.services.settings.secret_values())
+        self.db.execute(
+            "UPDATE tool_calls SET status = 'completed', output = ?, is_error = ?, finished_at = ? WHERE task_id = ? AND call_id = ?",
+            (content, 1 if output.is_error else 0, now_iso(), self.task_id, call.id),
+        )
+        self._event("tool_error" if output.is_error else "tool_result", output.summary or "Recovered",
                     {"tool": call.name, "call_id": call.id, **(output.data or {})})  # fmt: skip
         return ToolResult(call.id, call.name, content, output.is_error)
 

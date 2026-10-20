@@ -41,7 +41,7 @@ class Scheduler:
                 self.tick()
             except Exception:
                 log.exception("scheduler tick failed")
-            await asyncio.sleep(TICK_SECONDS)
+            await asyncio.sleep(getattr(self.services.settings, "scheduler_tick_seconds", TICK_SECONDS))
 
     async def stop(self) -> None:
         if self._task:

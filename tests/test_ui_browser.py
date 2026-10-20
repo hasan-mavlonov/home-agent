@@ -214,3 +214,64 @@ def test_ui_draft_review_approve_send(tmp_path):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+@pytest.mark.skipif(CHROMIUM is None and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), reason="Chromium not installed")
+def test_ui_script_task_shows_exit_status_and_artifact(tmp_path):
+    """MOCKED model; REAL script run (SCRIPT_SANDBOX=basic). The chat shows what the tools produced."""
+    from helpers import ScriptedProvider
+    from playwright.sync_api import sync_playwright
+    from test_scripts import FIB, FIB_CSV
+
+    settings = make_settings(tmp_path, port=_free_port(), script_sandbox="basic")
+    db = Database(settings.db_path)
+    db.migrate()
+    provider = ScriptedProvider([
+        lambda m: ("tools", [("write_file", {"path": "scripts/fib.py", "content": FIB})]),
+        lambda m: ("tools", [("run_script", {"path": "scripts/fib.py", "args": ["10"]})]),
+        lambda m: ("text", "Ran scripts/fib.py: exit status 0. The numbers are in outputs/fib.csv."),
+    ])  # fmt: skip
+    services = Services(settings, db, provider_factory=lambda name: provider)
+    AuthService(db).set_password(PASSWORD)
+    app = create_app(settings, services=services, use_lock=False)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=settings.port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.05)
+    base = f"http://127.0.0.1:{settings.port}"
+    errors: list[str] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=CHROMIUM) if CHROMIUM else p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 900}, accept_downloads=True)
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base + "/")
+            page.fill("#password", PASSWORD)
+            page.click("#login-form button")
+            page.click("button:has-text('New chat')")
+            page.wait_for_selector("textarea[aria-label=Message]")
+            page.fill("textarea[aria-label=Message]", "Write and run a script that saves the first 10 Fibonacci numbers as CSV.")
+            page.click("button:has-text('Send')")
+            page.wait_for_selector(".msg.assistant", timeout=20000)
+            outputs = page.locator(".task-outputs").last
+            outputs.locator("text=Ran scripts/fib.py: exit status 0").wait_for(timeout=10000)
+            with page.expect_download() as download:
+                outputs.locator("a:has-text('outputs/fib.csv')").click()
+            assert Path(download.value.path()).read_bytes() == FIB_CSV.encode()
+            if SHOTS:
+                page.screenshot(path=str(SHOTS / "script-chat-desktop.png"), full_page=True)
+            page.goto(base + "/#/tasks/1")
+            page.wait_for_selector(".produced")
+            text = page.inner_text(".produced")
+            assert "scripts/fib.py: exit status 0" in text and "outputs/fib.csv" in text and "sha256" in text
+            page.goto(base + "/#/settings")
+            page.click("button:has-text('Test sandbox')")
+            page.wait_for_selector("text=Network blocked: blocked", timeout=20000)
+            if SHOTS:
+                page.screenshot(path=str(SHOTS / "script-settings-desktop.png"), full_page=True)
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+    assert not errors, errors
