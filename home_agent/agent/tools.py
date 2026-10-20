@@ -4,13 +4,16 @@ Read-only tools: web_search, fetch_page, list_saved_opportunities, list_files, r
 Tools with local side effects are idempotent per (task, tool call id), so re-running a
 call after a crash never duplicates anything: save_opportunity (upsert), draft_email
 (draft only, never sent), remember_preference, propose_schedule (inactive until the user
-confirms), write_file (same content). There is no tool that sends email, submits forms,
-runs shell commands, or reads settings or credentials.
+confirms), write_file (same content). run_script is the exception: a script can do
+anything inside the workspace, so an interrupted run is never started again; its outcome
+is recovered from the run record instead (see agent/sandbox.py). There is no tool that
+sends email, submits forms, runs shell commands, or reads settings or credentials.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -129,6 +132,12 @@ class ListFilesInput(Strict):
     pass
 
 
+class RunScriptInput(Strict):
+    path: str = Field(max_length=500, description="Workspace path of a .py file you wrote with write_file, e.g. scripts/report.py")
+    args: list[str] = Field(default_factory=list, max_length=20, description="Command-line arguments (sys.argv[1:]).")
+    timeout_seconds: int = Field(60, ge=1, le=600, description="Stop the script after this many seconds.")
+
+
 class ReadFileInput(Strict):
     path: str = Field(max_length=500, description="Path relative to the workspace, e.g. uploads/cv.pdf")
     start_char: int = Field(0, ge=0)
@@ -136,7 +145,7 @@ class ReadFileInput(Strict):
 
 
 class WriteFileInput(Strict):
-    path: str = Field(max_length=500, description="Relative path ending in .md, .txt, .csv, .json or .tsv")
+    path: str = Field(max_length=500, description="Relative path ending in .md, .txt, .csv, .json, .tsv or .py")
     content: str = Field(max_length=200_000)
 
 
@@ -180,6 +189,8 @@ class Tool:
     side_effect: bool = False
     scheduled_allowed: bool = True
     schema: dict = field(default_factory=dict)
+    rerun_safe: bool = True  # False: an interrupted call is recovered, never run a second time
+    recover: Callable[[ToolContext, Any, str], Awaitable[ToolOutput | None]] | None = None
 
 
 # ---------------------------------------------------------------------------------------
@@ -480,8 +491,69 @@ async def _write_file(ctx: ToolContext, args: WriteFileInput, call_id: str) -> T
     try:
         info = ctx.services.workspace.write_text(args.path, args.content)
     except WorkspaceError as exc:
-        return ToolOutput(f"Cannot write file: {exc}", is_error=True)
-    return ToolOutput(f"Wrote {info['path']} ({info['size']} bytes).", summary=f"Wrote {info['path']}")
+        return ToolOutput(f"Cannot write file: {exc}", is_error=True, summary=str(exc))
+    sha = hashlib.sha256(args.content.encode("utf-8")).hexdigest()
+    return ToolOutput(f"Wrote {info['path']} ({info['size']} bytes, sha256 {sha[:16]}).", summary=f"Wrote {info['path']}",
+                      data={"files": [{"path": info["path"], "size": info["size"], "sha256": sha, "change": "written"}]})  # fmt: skip
+
+
+def _script_output(result) -> ToolOutput:
+    recovered = ' recovered_after_restart="true"' if result.recovered else ""
+    lines = [f'<script_run path="{_attr(result.script)}" status="{result.status}" exit_status="{result.exit_code}" '
+             f'duration_seconds="{result.duration}"{recovered}>']  # fmt: skip
+    if result.recovered:
+        lines.append("This run was interrupted by a server restart. The result below comes from its run record; "
+                     "the script was NOT run again.")  # fmt: skip
+    if result.status == "timed_out":
+        lines.append("The script was stopped because it exceeded its time limit.")
+    elif result.status == "killed":
+        lines.append("The script was stopped by a resource limit or the sandbox.")
+    elif result.status == "interrupted":
+        lines.append("The script was stopped before it finished because the task was cancelled or the server restarted. "
+                     "It was not run again; check the workspace before deciding whether to run it again.")  # fmt: skip
+    elif result.status == "unknown":
+        lines.append("The script did not report an exit status before its deadline; its outcome is unknown. It was not "
+                     "run again. Check the workspace with list_files before deciding whether to run it again.")  # fmt: skip
+    lines.append(f"stdout{' (truncated)' if result.stdout_truncated else ''}:\n{truncate(result.stdout, 8000) or '(empty)'}")
+    lines.append(f"stderr{' (truncated)' if result.stderr_truncated else ''}:\n{truncate(result.stderr, 4000) or '(empty)'}")
+    if result.files:
+        lines.append("Files changed in the workspace:")
+        for f in result.files:
+            detail = "" if f["change"] == "deleted" else f" ({f['size']} bytes, sha256 {(f.get('sha256') or '?')[:16]})"
+            lines.append(f"- {f['change']} {f['path']}{detail}")
+    else:
+        lines.append("No files in the workspace were created or changed.")
+    lines.append("</script_run>")
+    if result.status == "exited":
+        summary = f"Exit {result.exit_code} in {result.duration:.1f} s"
+    else:
+        summary = {"timed_out": "Timed out", "killed": "Stopped by a limit", "unknown": "Outcome unknown",
+                   "interrupted": "Interrupted"}.get(result.status, result.status)  # fmt: skip
+    made = [f for f in result.files if f["change"] != "deleted"]
+    if made:
+        summary += f"; {len(made)} file{'s' if len(made) != 1 else ''} written"
+    if result.recovered:
+        summary = "Recovered after restart: " + summary
+    data = {"script": result.script, "status": result.status, "exit_code": result.exit_code, "duration": result.duration,
+            "run_id": result.run_id, "recovered": result.recovered, "files": result.files}  # fmt: skip
+    return ToolOutput("\n".join(lines), is_error=not result.ok, summary=summary, data=data)
+
+
+async def _run_script(ctx: ToolContext, args: RunScriptInput, call_id: str) -> ToolOutput:
+    from .sandbox import ScriptError, run_id_for
+
+    try:
+        result = await ctx.services.scripts.run(args.path, args.args, args.timeout_seconds, run_id_for(ctx.task_id, call_id))
+    except ScriptError as exc:
+        return ToolOutput(f"Cannot run script: {exc}", is_error=True, summary=str(exc))
+    return _script_output(result)
+
+
+async def _recover_script(ctx: ToolContext, args: RunScriptInput, call_id: str) -> ToolOutput | None:
+    from .sandbox import run_id_for
+
+    result = await ctx.services.scripts.recover(run_id_for(ctx.task_id, call_id))
+    return None if result is None else _script_output(result)
 
 
 def _attr(value: str) -> str:
@@ -523,8 +595,15 @@ TOOLS: list[Tool] = [
          ProposeScheduleInput, _propose_schedule, side_effect=True, scheduled_allowed=False),
     Tool("list_files", "List files in the agent workspace (including files the user uploaded).", ListFilesInput, _list_files),
     Tool("read_file", "Read a text, Markdown, CSV, JSON or PDF file from the workspace.", ReadFileInput, _read_file),
-    Tool("write_file", "Write a text/Markdown/CSV/JSON file in the workspace (for notes or reports the user asked for).",
+    Tool("write_file", "Write a text, Markdown, CSV, JSON or Python (.py) file in the workspace: notes, reports, data, or "
+         "a script to run with run_script.",
          WriteFileInput, _write_file, side_effect=True),
+    Tool("run_script",
+         "Run a Python script from the workspace and return its exit status, output and the files it created or "
+         "changed. Write the script first with write_file. It runs in a sandbox: standard library only, no network, no "
+         "subprocesses, and it can only read and write inside the workspace (its working directory). Have it write "
+         "results to files such as outputs/result.csv.",
+         RunScriptInput, _run_script, side_effect=True, rerun_safe=False, recover=_recover_script),
 ]  # fmt: skip
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
@@ -560,10 +639,12 @@ for _tool in TOOLS:
     _tool.schema = _inline_schema(_tool.input_model.model_json_schema())
 
 
-def tools_for(kind: str) -> list[Tool]:
-    if kind == "scheduled":
-        return [t for t in TOOLS if t.scheduled_allowed]
-    return list(TOOLS)
+def tools_for(kind: str, services: Any = None) -> list[Tool]:
+    tools = [t for t in TOOLS if t.scheduled_allowed] if kind == "scheduled" else list(TOOLS)
+    scripts = getattr(services, "scripts", None)
+    if scripts is None or not scripts.available:
+        tools = [t for t in tools if t.name != "run_script"]  # not offered at all, so the model cannot pretend
+    return tools
 
 
 def validate_input(tool: Tool, raw: dict | None) -> tuple[BaseModel | None, str | None]:

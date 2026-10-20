@@ -163,6 +163,17 @@ class Settings(BaseSettings):
     )
     gmail_allow_send: bool = Field(False, validation_alias=AliasChoices("GMAIL_ALLOW_SEND", "gmail_allow_send"))
 
+    # --- workspace scripts --------------------------------------------------------------
+    script_sandbox: Literal["auto", "seatbelt", "bwrap", "basic", "off"] = Field(
+        "auto", validation_alias=AliasChoices("SCRIPT_SANDBOX", "script_sandbox")
+    )
+    script_max_seconds: int = Field(
+        120, ge=5, le=600, validation_alias=AliasChoices("SCRIPT_MAX_SECONDS", "script_max_seconds")
+    )
+    scheduler_tick_seconds: float = Field(
+        30.0, ge=0.5, le=300, validation_alias=AliasChoices("HOME_AGENT_SCHEDULER_TICK_SECONDS", "scheduler_tick_seconds")
+    )
+
     @field_validator("data_dir", mode="before")
     @classmethod
     def _expand_data_dir(cls, v):
@@ -191,7 +202,8 @@ class Settings(BaseSettings):
             return None
         return v
 
-    @field_validator("qwen_model", "qwen_region", "qwen_thinking", "qwen_max_tokens", "qwen_context_tokens", mode="before")
+    @field_validator("qwen_model", "qwen_region", "qwen_thinking", "qwen_max_tokens", "qwen_context_tokens",
+                     "script_sandbox", "script_max_seconds", mode="before")
     @classmethod
     def _blank_to_default(cls, v, info):
         if isinstance(v, str) and not v.strip():

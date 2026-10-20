@@ -274,7 +274,34 @@ def task_detail(task_id: int, request: Request):
     )
     out["drafts"] = db.all("SELECT id, subject, status FROM drafts WHERE source_task_id = ?", (task_id,))
     out["running_here"] = bool(svc.worker and task_id in svc.worker.running)
+    out["script_runs"], out["artifacts"] = _task_outputs(svc, out["events"])
     return out
+
+
+def _task_outputs(svc, events: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Script runs and workspace files produced by a task's tools, checked against the workspace now."""
+    runs, files = [], {}
+    for event in events:
+        data = event.get("data") or {}
+        if event["type"] not in ("tool_result", "tool_error"):
+            continue
+        if data.get("tool") == "run_script" and "status" in data:
+            runs.append({k: data.get(k) for k in ("script", "status", "exit_code", "duration", "recovered", "run_id")})
+        for item in data.get("files") or []:
+            if item.get("change") == "deleted":
+                files.pop(item["path"], None)
+            else:
+                files[item["path"]] = {"path": item["path"], "size": item.get("size"), "sha256": item.get("sha256"),
+                                       "tool": data.get("tool")}  # fmt: skip
+    artifacts = []
+    for item in files.values():
+        try:
+            meta = svc.workspace.file_meta(item["path"])
+            item.update({"exists": True, "unchanged": meta["sha256"] == item["sha256"], "current_size": meta["size"]})
+        except WorkspaceError:
+            item.update({"exists": False, "unchanged": False})
+        artifacts.append(item)
+    return runs, artifacts
 
 
 @api.get("/tasks/{task_id}/events")
@@ -708,8 +735,17 @@ def integrations(request: Request):
         "gmail": svc.gmail.status(),
         "outbound_proxy": bool(s.outbound_proxy),
         "local_only": s.local_only,
+        "scripts": svc.scripts.describe(),
         "spend": spend_summary(svc.db, svc.runtime("timezone")),
     }
+
+
+@api.post("/integrations/test-scripts")
+async def test_scripts(request: Request):
+    checks = await services(request).scripts.self_test()
+    failed = [f"{name}: {detail}" for name, ok, detail in checks if not ok]
+    return {"ok": not failed, "checks": [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks],
+            "message": "All sandbox checks passed" if not failed else "; ".join(failed)}  # fmt: skip
 
 
 @api.post("/integrations/test-model")
@@ -819,6 +855,20 @@ def file_content(request: Request, path: str, start: int = 0):
     except WorkspaceError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"path": path, "text": text, "total_chars": total}
+
+
+@api.get("/files/download")
+def download_file(request: Request, path: str):
+    """Always an attachment with a generic type: files the agent wrote are never rendered by the browser."""
+    workspace = services(request).workspace
+    try:
+        data = workspace.read_bytes(path)
+    except WorkspaceError as exc:
+        raise HTTPException(404 if "No such file" in str(exc) else 400, str(exc)) from None
+    name = "".join(c if c.isalnum() or c in "._-" else "_" for c in path.rsplit("/", 1)[-1]) or "download"
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "no-store"})  # fmt: skip
 
 
 @api.delete("/files")

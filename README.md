@@ -12,14 +12,15 @@ them, and runs recurring research only on schedules you set up or confirm.
 
 | Area | What you get |
 |---|---|
-| Agent | Tool-calling loop (Qwen on Alibaba Cloud Model Studio, Claude API, Ollama, or any OpenAI-compatible server) with validated tool inputs, retries, cancellation, and limits on steps, tool calls, searches, page reads, time, tokens and dollars (per task and per day). Progress shows real tool activity only; model reasoning is never displayed. |
+| Agent | Tool-calling loop (Qwen on Alibaba Cloud Model Studio, Claude API, Ollama, or any OpenAI-compatible server) with validated tool inputs, retries, cancellation, and limits on steps, tool calls, searches, page reads, time, tokens and dollars (per task and per day). Every request is a task that acts through tools: if the model replies with a promise ("I'll do that") or claims work while no tool ran, it is asked once to act, and an answer that still claims unrun work is labelled as such. Progress shows real tool activity only; model reasoning is never displayed. |
+| Scripts | The agent can write a Python script in its workspace and run it. Scripts run in a sandbox (macOS Seatbelt or Linux bubblewrap): standard library only, no network, no other programs, files only inside the workspace, a time limit. The task shows the exit status, the output and every file the script created, with size and SHA-256, ready to download. A script interrupted by a crash or restart is never run twice; its result is recovered from its run record. See [Scripts](#scripts). |
 | Durability | SQLite job queue. Every step is checkpointed and every tool call is recorded in a ledger, so after a crash or restart a task resumes where it was without repeating side effects. Closing the browser has no effect on running tasks. |
 | Research | Search through Brave, Tavily or your own SearXNG. Pages and PDFs are fetched and read; JavaScript-heavy pages are rendered in headless Chromium. Blocked pages, logins and CAPTCHAs are reported honestly, never bypassed. |
 | Honesty checks | A fact can only be marked *verified* if its quote is found on a page fetched in that task and cited for that opportunity (a quote that appears only on some other page the task read does not count). A quote shortened with "..." passes only if every piece is on the page, in order, within 500 characters of the previous piece. Downgraded facts show why on hover and are listed on the task. Pages that look like a past edition (a title saying "Recap" or naming only earlier years, or "registration closed" near the top) get a notice on the opportunity. Sources must be pages the agent actually consulted. Links in an answer that were never opened are flagged. Expired opportunities are marked. |
 | Opportunities | Sortable table (cards on mobile): name, category, relevance, eligibility, deadline and time zone, location and format, cost, prize or funding, application link, sources with check dates, verification status. De-duplicated. You can bookmark, dismiss, add notes, and export to CSV. New finds are highlighted. |
 | Email | Drafts live in the app (copy, or open in your mail app). Optional Gmail integration creates Gmail drafts (`gmail.compose` scope only). Optional sending requires you to approve the exact recipients, subject, body and attachments; the backend enforces it, any edit cancels the approval, and a send can't happen twice. The agent has no send tool. |
 | Memory and schedules | Conversations, tasks, sources, opportunities, drafts and schedules are stored. Editable profile (starts with Shanghai, Uzbek citizen, AI undergraduate, MindForm, Defex Robotics) plus editable and deletable saved notes. Daily, weekly or monthly schedules in Asia/Shanghai by default; schedules the agent proposes stay inactive until you confirm them. In-app notifications. |
-| Security | Password login, server-side sessions, CSRF tokens, strict CSP, host-header checks, login rate limiting. Credentials stay in `.env` (never in prompts, logs, or API responses); Gmail tokens are encrypted at rest. Agent web access cannot reach localhost, private networks, Tailscale addresses or cloud metadata endpoints, including through redirects and DNS tricks. File access is confined to a workspace folder. No shell access for the agent. |
+| Security | Password login, server-side sessions, CSRF tokens, strict CSP, host-header checks, login rate limiting. Credentials stay in `.env` (never in prompts, logs, or API responses); Gmail tokens are encrypted at rest. Agent web access cannot reach localhost, private networks, Tailscale addresses or cloud metadata endpoints, including through redirects and DNS tricks. File access is confined to a workspace folder. No shell access for the agent; Python scripts run only in the sandbox described under Scripts. |
 
 ## Install (macOS, Apple Silicon)
 
@@ -121,6 +122,28 @@ QWEN_MODEL=qwen-plus
   task's activity. If the rejection persists, the task fails with that reason.
 - **Context.** Each step resends the conversation. `QWEN_CONTEXT_TOKENS` (default 128000) shortens the
   oldest page text so a request stays under that size, which keeps the cost per step bounded.
+
+## Scripts
+
+Ask for something like "Write and run a Python script that ... and give me the CSV". The agent writes the
+script with `write_file`, runs it with `run_script`, and the chat shows the exit status and the files it
+produced, each with a download link (Tasks shows the same under "Produced by tools").
+
+- **Sandbox.** `SCRIPT_SANDBOX=auto` uses Seatbelt (`/usr/bin/sandbox-exec`) on macOS and bubblewrap
+  (`bwrap`) on Linux. Scripts get no network, cannot start other programs, can write only inside the
+  workspace, and cannot read your home folder outside the workspace and Python itself (so not `.env`, the
+  database, SSH keys or documents). No variables from the server's environment are passed to them. Inside
+  Python an audit hook enforces the same rules as a second layer, with CPU, memory and file-size limits.
+- **Check it on your Mac:** `uv run home-agent doctor`, or Settings → Scripts → Test sandbox. It runs a probe
+  script twice, with the OS sandbox alone and with both layers, and shows whether network, other programs,
+  writes outside the workspace and reading Home Agent's private files are blocked.
+- **No OS sandbox:** on Linux without bubblewrap, scripts are off and the agent is told it cannot run code.
+  `SCRIPT_SANDBOX=basic` turns on the in-process layer alone; it is weaker, because deliberately hostile
+  code can escape Python-level checks. `SCRIPT_SANDBOX=off` disables scripts.
+- **Limits.** Standard library only (no pip packages). `SCRIPT_MAX_SECONDS` (default 120) caps each run.
+- **Restarts.** Every run has a record in `<data dir>/runs/`. If the server stops during a run, the task
+  resumes after the restart and reports the run's outcome from that record; the script is never started a
+  second time.
 
 ## Everyday commands
 
@@ -274,12 +297,17 @@ HOME_AGENT_LIVE=1 uv run pytest tests/live   # live tests; each skips itself if 
 
 What the default tests use (labelled in each test file):
 
-- **Mocked:** the model (scripted), search results, web pages and Gmail.
+- **Mocked:** the model (scripted, or a fake OpenAI-compatible endpoint), search results, web pages and
+  Gmail.
 - **Real:** the HTTP server, auth and CSRF, the SQLite queue, worker, scheduler, approval logic, network
-  guard, filtering proxy, and the Anthropic SDK request and response handling (against a mocked HTTP
-  transport).
+  guard, filtering proxy, script subprocesses, and the Anthropic SDK request and response handling
+  (against a mocked HTTP transport).
 
-`tests/test_ui_browser.py` drives the actual web UI in headless Chromium.
+`tests/test_ui_browser.py` drives the actual web UI in headless Chromium. `tests/test_process_e2e.py` starts
+the real `home-agent serve` process and checks, over HTTP: a task keeps running after the client
+disconnects; a SIGKILL in the middle of a script run is recovered after restart without running the script
+twice; cancelling stops a running script; a schedule survives a restart and runs when its time comes (it
+waits for the next minute, so this file takes about a minute).
 
 The tests cover:
 
@@ -287,6 +315,10 @@ The tests cover:
 - the email approval rules and duplicate-send prevention, including concurrent clicks, lost responses and a
   restart mid-send;
 - cancellation, step and budget limits, and restart recovery without duplicated side effects;
+- running workspace scripts: exit status, output and files with checksums; failures and time limits; the
+  sandbox refusing network, other programs, native code, writes outside the workspace and reading private
+  files; a clean environment; recovery of an interrupted run without re-running it; the model being asked
+  to act when it only promises work, and answers that claim unrun work being labelled;
 - the Qwen adapter against a simulated Model Studio: streamed tool calls, region detection, models that
   always think, unknown prices, the content filter, and a full agent run;
 - the quote check (including "..." quotes and facts without a source page), past-edition notices, and a
@@ -316,6 +348,11 @@ HOME_AGENT_LIVE=1 MODEL_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b SEARCH_PROVIDER=se
 
 ## Known limitations
 
+- The macOS Seatbelt profile could not be run in the build environment (Linux, no macOS), and neither could
+  bubblewrap (not installed there). Script tests ran with `SCRIPT_SANDBOX=basic`. Run
+  `uv run home-agent doctor` on your Mac: it shows whether the Seatbelt sandbox starts and blocks what it
+  should. If it fails, scripts fail closed with that error until it is fixed or you choose
+  `SCRIPT_SANDBOX=basic`.
 - Qwen support was tested against a simulated Model Studio API built from Alibaba's documentation, not
   against the live service, because the build environment cannot reach it. Run
   `uv run home-agent doctor --live` once after adding your key; it makes one tiny request and reports the

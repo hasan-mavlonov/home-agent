@@ -190,8 +190,9 @@ def scheduled_prompt(schedule: dict) -> str:
     return (
         f"This is an automatic scheduled run of \"{schedule['name']}\" ({schedule['description'].lower()}). "
         "Nobody is waiting to answer questions, so use sensible defaults instead of asking. "
-        "Call list_saved_opportunities first so you can skip opportunities that are already saved and unchanged, "
-        "re-check saved ones whose deadlines or details may have changed, and clearly list what is NEW in this run.\n\n"
+        "If the task is about opportunities, call list_saved_opportunities first so you can skip ones that are already "
+        "saved and unchanged, re-check saved ones whose deadlines or details may have changed, and clearly list what "
+        "is NEW in this run.\n\n"
         f"Task: {schedule['prompt']}"
     )
 

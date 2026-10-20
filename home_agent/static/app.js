@@ -279,6 +279,29 @@ function taskMetrics(task) {
   return h("div", { class: "metrics" }, parts.filter(Boolean).map((p) => h("span", {}, p)));
 }
 
+function downloadLink(path, label) {
+  return h("a", { href: `/api/files/download?path=${encodeURIComponent(path)}`, download: "", class: "small" }, label || path);
+}
+
+function shortHash(sha) { return sha ? sha.slice(0, 12) : "?"; }
+
+// What a tool actually produced, from the task's own events: script runs and workspace files.
+function outputItems(event) {
+  const data = event.data || {};
+  const items = [];
+  if (data.tool === "run_script" && data.status) {
+    const ok = data.status === "exited" && data.exit_code === 0;
+    const label = data.status === "exited" ? `exit status ${data.exit_code}` : data.status.replace("_", " ");
+    items.push(h("div", { class: ok ? "check-ok small" : "check-bad small" },
+      `${ok ? "✓" : "✗"} Ran ${data.script}: ${label}${data.recovered ? " (recovered after restart, not run twice)" : ""}`));
+  }
+  for (const f of data.files || []) {
+    if (f.change === "deleted") continue;
+    items.push(h("div", { class: "small" }, "📄 ", downloadLink(f.path), h("span", { class: "muted" }, ` ${f.size} bytes · sha256 ${shortHash(f.sha256)}`)));
+  }
+  return items;
+}
+
 function liveTaskCard(task, { onFinish, compact } = {}) {
   const list = h("ul", { class: "timeline" });
   const statusEl = h("span", {}, statusChip(task.status));
@@ -298,8 +321,9 @@ function liveTaskCard(task, { onFinish, compact } = {}) {
     h("div", { class: "head" }, statusEl, h("a", { href: `#/tasks/${task.id}`, class: "small" }, `Task #${task.id}`), detail,
       h("span", { class: "spacer" }), cancel),
     body);
+  const outputs = h("div", { class: "task-outputs" });
   const warnings = h("div", { class: "small check-warn" });
-  card.append(warnings);
+  card.append(outputs, warnings);
   let after = 0;
   let current = task;
   async function poll() {
@@ -309,6 +333,7 @@ function liveTaskCard(task, { onFinish, compact } = {}) {
       list.append(eventItem(event));
       after = Math.max(after, event.id);
       if (event.type === "check") warnings.append(h("div", {}, `⚠ ${event.summary} - see task #${task.id}`));
+      if (event.type === "tool_result" || event.type === "tool_error") outputs.append(...outputItems(event));
     }
     const was = current.status;
     current = data.task;
@@ -335,6 +360,7 @@ const EXAMPLES = [
   "Find startup competitions, grants, and accelerator opportunities relevant to my projects.",
   "Research this company and summarize what it does: ",
   "Draft an email asking whether international students can participate.",
+  "Write and run a Python script that computes monthly payments for a 10,000 USD loan at 4%, 6% and 8% over 3 years, and give me the CSV.",
   "Check these opportunities every week and show me newly discovered ones.",
 ];
 
@@ -407,7 +433,7 @@ async function renderConversation(id, main) {
       input.value = text; input.focus();
     } }, text))));
   }
-  const input = h("textarea", { rows: 2, placeholder: active ? "The agent is working on your last request..." : "Ask your agent to research something", "aria-label": "Message" });
+  const input = h("textarea", { rows: 2, placeholder: active ? "The agent is working on your last request..." : "Give your agent a task: research, a file to write, a script to run...", "aria-label": "Message" });
   input.value = sessionStorage.getItem(`draft-${id}`) || "";
   input.addEventListener("input", () => sessionStorage.setItem(`draft-${id}`, input.value));
   const send = h("button", { class: "primary", disabled: !!active }, "Send");
@@ -477,6 +503,13 @@ async function renderTaskDetail(id) {
       liveTaskCard(task, { onFinish: () => renderTaskDetail(id) }),
       task.error ? h("div", { class: "notice danger" }, task.error) : null),
     task.result_html ? h("div", { class: "card" }, h("h3", {}, "Result"), h("div", { class: "md", html: task.result_html })) : null,
+    task.script_runs.length || task.artifacts.length ? h("div", { class: "card stack produced" }, h("h3", {}, "Produced by tools"),
+      task.script_runs.map((r) => statusLine(r.status === "exited" && r.exit_code === 0,
+        `${r.script}: ${r.status === "exited" ? "exit status " + r.exit_code : r.status.replace("_", " ")} in ${Number(r.duration || 0).toFixed(1)} s${r.recovered ? " (recovered after a restart; not run twice)" : ""}`)),
+      task.artifacts.length ? h("ul", { class: "list" }, task.artifacts.map((f) => h("li", { class: "row" }, "📄 ",
+        f.exists ? downloadLink(f.path) : h("code", {}, f.path),
+        h("span", { class: "small muted" }, ` ${f.size} bytes · sha256 ${shortHash(f.sha256)}`),
+        !f.exists ? h("span", { class: "small check-bad" }, " deleted since") : !f.unchanged ? h("span", { class: "small check-warn" }, " changed since") : null))) : null) : null,
     checks.length ? h("div", { class: "card" }, h("h3", {}, "Checks"), checks.map((c) => h("div", { class: "notice warn" },
       h("p", {}, c.summary), h("ul", {}, (c.data && c.data.urls || []).map((u) => h("li", {}, h("code", {}, u))))))) : null,
     task.opportunities.length || task.drafts.length ? h("div", { class: "card" }, h("h3", {}, "Saved by this task"),
@@ -936,6 +969,7 @@ async function renderFiles() {
           const content = await guarded(() => api("GET", `/api/files/content?path=${encodeURIComponent(f.path)}`));
           if (content) viewer.replaceChildren(h("div", { class: "card" }, h("h3", {}, f.path), h("pre", {}, content.text)));
         } }, "View"),
+        h("a", { class: "button small", href: `/api/files/download?path=${encodeURIComponent(f.path)}`, download: "" }, "Download"),
         h("button", { class: "small danger", onclick: async () => { if (confirm(`Delete ${f.path}?`)) { await guarded(() => api("DELETE", `/api/files?path=${encodeURIComponent(f.path)}`)); route(); } } }, "Delete"))))
         : h("p", { class: "muted" }, "No files yet.")),
     viewer);
@@ -968,6 +1002,12 @@ async function renderSettings() {
   const modelOut = testOut("model-test");
   const searchOut = testOut("search-test");
   const browserOut = testOut("browser-test");
+  const scriptsOut = testOut("scripts-test");
+  const testScripts = async () => {
+    scriptsOut.textContent = "Testing the sandbox...";
+    const res = await guarded(() => api("POST", "/api/integrations/test-scripts"));
+    if (res) scriptsOut.replaceChildren(...res.checks.map((c) => statusLine(c.ok, `${c.name}: ${c.detail}`)));
+  };
   const runTest = (path, out) => async () => {
     out.textContent = "Testing...";
     const res = await guarded(() => api("POST", path));
@@ -1008,6 +1048,10 @@ async function renderSettings() {
         integ.browser.enabled ? statusLine(integ.browser.last_error ? false : true, integ.browser.last_error || "JavaScript rendering available on demand") : statusLine(null, "JavaScript rendering disabled"),
         h("div", { class: "row" }, h("button", { class: "small", onclick: runTest("/api/integrations/test-browser", browserOut) }, "Test browser")), browserOut,
         integ.outbound_proxy ? statusLine(null, "Outbound proxy is configured") : null),
+      h("div", { class: "card stack" }, h("h3", {}, "Scripts"),
+        statusLine(integ.scripts.enabled ? true : null, integ.scripts.enabled ? `Python scripts run in a sandbox: ${integ.scripts.detail}` : `Running scripts is off: ${integ.scripts.detail}`),
+        h("div", { class: "small muted" }, `No network, no other programs, files only inside the workspace, at most ${integ.scripts.max_seconds} s per run.`),
+        integ.scripts.enabled ? h("div", { class: "row" }, h("button", { class: "small", onclick: testScripts }, "Test sandbox")) : null, scriptsOut),
       h("div", { class: "card stack" }, h("h3", {}, "Gmail (optional)"), gmailBox),
       h("div", { class: "card stack" }, h("h3", {}, "Time & budget"),
         h("label", {}, "Time zone"), tz, tzList,

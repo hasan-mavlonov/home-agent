@@ -9,8 +9,8 @@ import re
 import tempfile
 from pathlib import Path
 
-TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json", ".tsv", ".yaml", ".yml", ".html", ".xml", ".log"}
-WRITE_EXTENSIONS = {".md", ".txt", ".csv", ".json", ".tsv"}
+TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json", ".tsv", ".yaml", ".yml", ".html", ".xml", ".log", ".py"}
+WRITE_EXTENSIONS = {".md", ".txt", ".csv", ".json", ".tsv", ".py"}  # .py only runs through the sandboxed run_script
 UPLOAD_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
 MAX_WRITE_BYTES = 1_000_000
 MAX_UPLOAD_BYTES = 15_000_000

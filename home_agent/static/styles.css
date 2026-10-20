@@ -286,3 +286,5 @@ details summary { cursor: pointer; }
 .chip { background: var(--surface-2); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.8rem; }
 .opp-warn { overflow-wrap: anywhere; }
 details.opp-warn summary { cursor: pointer; }
+.task-outputs:empty { display: none; }
+.task-outputs { margin-top: 0.4rem; display: grid; gap: 0.15rem; }

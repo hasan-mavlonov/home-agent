@@ -53,6 +53,9 @@ class Services:
             search, self._search_client = build_search_provider(settings)
         self.search = search
         self.workspace = Workspace(settings.workspace_dir)
+        from ..agent.sandbox import ScriptRunner
+
+        self.scripts = ScriptRunner(settings, self.workspace)
         self.box = SecretBox(settings.secret_key.get_secret_value()) if settings.secret_key else None
         self.gmail = gmail or GmailService(settings, db, self.box)
         self._provider_factory = provider_factory
